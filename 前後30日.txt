@@ -1,0 +1,491 @@
+'use client';
+
+import React, { useMemo, useState } from 'react';
+
+/** ====== f1=keywords（原本） ====== */
+const KEYWORDS = [
+  "台灣","台湾","台海","軍演","演訓","佩洛西","制裁","嚴正","堅決","強烈",
+  "導彈","东风","實彈","实弹","行动","行動","嚴重後果","严重后果","維權","維穩"
+];
+const KW_RE = new RegExp(KEYWORDS.map(esc).join("|"), "g");
+
+/** ====== f1=intent 三籃字典（正當化/決心、威懲、升級） ====== */
+const BAG_JUSTIFY = [
+  "正當","正当","正當化","正当化","合理","必要","不得已","維護主權","维护主权",
+  "捍衛","捍卫","維護","维护","嚴正","严正","堅決","坚决","嚴肅","严肃","正告","郑重"
+];
+const BAG_DETER = [
+  "威懾","威慑","懲罰","惩罚","制裁","反制","嚴重後果","严重后果","必將付出代价","付出代價",
+  "警告","譴責","谴责","報復","报复","強硬措施","强硬措施","停約","中止","斷交","驅逐","驅離","扣押"
+];
+const BAG_ESCALATE = [
+  "升級","升级","加碼","加码","擴大","扩大","加強","加强","進一步","进一步","強化","强化","加快",
+  "節奏","节奏","頻次","频次","多點","多域","多方向","聯合演訓","联合演训","環台","环台","封控","封鎖","封锁",
+  "實彈","实弹","導彈","导弹","遠火","远火","演習範圍","演习范围","臨時管制區","临时管制区"
+];
+const RE_JUSTIFY   = makeRe(BAG_JUSTIFY);
+const RE_DETER     = makeRe(BAG_DETER);
+const RE_ESCALATE  = makeRe(BAG_ESCALATE);
+
+/** ====== 小工具 ====== */
+function esc(s: string){ return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function makeRe(list: string[]){ return new RegExp(list.map(esc).join("|"), "g"); }
+function hitCount(re: RegExp, s: string){ return (s.match(re) || []).length; }
+function stripBom(s: string){ return s.replace(/^\uFEFF/, ""); }
+function toYMD(d: Date){ return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString().slice(0,10); }
+function parseYMD(s: string){
+  const t = s.trim().replace(/["']/g,"");
+  let m = t.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
+  return isNaN(d.getTime()) ? null : d;
+}
+function addDays(d: Date, n: number){ const x = new Date(d); x.setUTCDate(x.getUTCDate()+n); return x; }
+function rangeDays(a: Date, b: Date){
+  const out: string[] = [];
+  for(let d=new Date(a); d<=b; d=addDays(d,1)) out.push(toYMD(d));
+  return out;
+}
+function movingAvg(arr: number[], k: number){
+  if (k<=1) return arr.slice();
+  const out: number[] = new Array(arr.length).fill(0);
+  let sum = 0;
+  for (let i=0;i<arr.length;i++){
+    sum += arr[i];
+    if (i>=k) sum -= arr[i-k];
+    out[i] = i>=k-1 ? sum/k : sum/(i+1);
+  }
+  return out;
+}
+function diffAbs(arr: number[]){
+  const out = new Array(arr.length).fill(0);
+  for(let i=1;i<arr.length;i++) out[i] = Math.abs(arr[i]-arr[i-1]);
+  return out;
+}
+function secondDiffAbs(arr: number[]){
+  const d1 = diffAbs(arr);
+  return diffAbs(d1);
+}
+function shift(arr: number[], lead: number){
+  const n = arr.length;
+  const out = new Array(n).fill(0);
+  for(let i=0;i<n;i++){
+    const j = i + lead;
+    if (j>=0 && j<n) out[i] = arr[j];
+  }
+  return out;
+}
+function minMaxNormByWindow(series: number[], dates: string[], winStart: string, winEnd: string){
+  let lo = +Infinity, hi = -Infinity;
+  for (let i=0;i<dates.length;i++){
+    if (dates[i]>=winStart && dates[i]<=winEnd){
+      if (series[i]<lo) lo = series[i];
+      if (series[i]>hi) hi = series[i];
+    }
+  }
+  if (!isFinite(lo) || !isFinite(hi) || hi===lo) {
+    lo = Math.min(...series);
+    hi = Math.max(...series);
+    if (hi===lo){ return series.map(_=>0.5); }
+  }
+  const span = hi - lo;
+  return series.map(v => Math.max(0, Math.min(1, (v - lo) / span)));
+}
+
+/** ====== 解析 CSV/TSV ====== */
+function parseTable(text: string): {rows: any[], headers: string[], delim: string}{
+  const raw = stripBom(text.replace(/\r\n/g, "\n"));
+  const firstLine = raw.split("\n")[0] ?? "";
+  const delim = firstLine.includes("\t") ? "\t" : ",";
+
+  const lines = raw.split("\n").filter(l => l.length>0);
+  if (lines.length===0) return {rows:[], headers:[], delim};
+
+  const headers = parseLine(lines[0], delim).map(h => stripBom(h).replace(/(^"|"$)/g,""));
+  const rows: any[] = [];
+  for (let i=1;i<lines.length;i++){
+    const cols = parseLine(lines[i], delim);
+    if (cols.length===0) continue;
+    const obj: any = {};
+    for (let j=0;j<headers.length;j++){
+      obj[headers[j]] = (cols[j] ?? "").replace(/(^"|"$)/g,"");
+    }
+    rows.push(obj);
+  }
+  return {rows, headers, delim};
+}
+function parseLine(line: string, delim: string){
+  const out: string[] = [];
+  let cur = "", q = false;
+  for (let i=0;i<line.length;i++){
+    const c = line[i];
+    if (q){
+      if (c === '"'){
+        if (line[i+1] === '"'){ cur += '"'; i++; }
+        else q = false;
+      }else cur += c;
+    }else{
+      if (c === '"') q = true;
+      else if (c === delim) { out.push(cur); cur=""; }
+      else cur += c;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
+/** ====== 型別 ====== */
+type F1Mode = 'docs' | 'keywords' | 'chars' | 'intent';
+
+export default function Page(){
+  const [fileName, setFileName]   = useState<string>("");
+  const [rawText, setRawText]     = useState<string>("");
+  const [rows, setRows]           = useState<any[]>([]);
+  const [headers, setHeaders]     = useState<string[]>([]);
+  const [delim, setDelim]         = useState<string>(",");
+
+  // 參數（與昨天一致）
+  const [w1, setW1] = useState(0.4);
+  const [w2, setW2] = useState(0.3);
+  const [w3, setW3] = useState(0.3);
+  const [ma, setMA] = useState(7);
+  const [lead, setLead] = useState(0);
+
+  // f1 量度選單（新增 intent，但保留原三個）
+  const [f1Mode, setF1Mode] = useState<F1Mode>('docs');
+
+  // === 新增：事件日與「只看前後 30 日」 ===
+  const [eventDate, setEventDate] = useState<string>("2022-08-02");
+  const [lock60, setLock60]       = useState<boolean>(true);
+
+  // 事件窗（預設用資料涵蓋期）
+  const {minDateStr, maxDateStr} = useMemo(()=>{
+    const ds: Date[] = [];
+    for (const r of rows){
+      const k = findKey(r, ["date","日期"]);
+      const d = k ? parseYMD(String(r[k])) : null;
+      if (d) ds.push(d);
+    }
+    if (ds.length===0){
+      return {minDateStr:"", maxDateStr:""};
+    }
+    ds.sort((a,b)=>+a-+b);
+    return {minDateStr: toYMD(ds[0]), maxDateStr: toYMD(ds[ds.length-1])};
+  },[rows]);
+
+  const [winStart, setWinStart] = useState<string>("");
+  const [winEnd,   setWinEnd]   = useState<string>("");
+
+  // 讀檔
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>){
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFileName(f.name);
+    const fr = new FileReader();
+    fr.onload = () => {
+      const text = typeof fr.result === 'string' ? fr.result : new TextDecoder("utf-8").decode(fr.result as ArrayBuffer);
+      const {rows, headers, delim} = parseTable(text);
+      setRawText(text);
+      setRows(rows);
+      setHeaders(headers);
+      setDelim(delim);
+      if (!winStart && !winEnd){
+        setWinStart(prev => prev || (minDateStr || ""));
+        setWinEnd(prev => prev || (maxDateStr || ""));
+      }
+    };
+    fr.readAsText(f);
+  }
+
+  // 統計資訊
+  const preview = useMemo(()=>{
+    if (rows.length===0) return null;
+
+    const kDate = findKeyFromArray(rows, ["date","日期"]);
+    const kText = findKeyFromArray(rows, ["text","內容","content","文本"]);
+    const kSrc  = findKeyFromArray(rows, ["source","來源","source_name"]);
+
+    const map = new Map<string, number>();
+    let dmin: Date|undefined, dmax: Date|undefined;
+
+    for (const r of rows){
+      const raw = kDate ? String(r[kDate]) : "";
+      const d = parseYMD(raw);
+      if (!d) continue;
+      const day = toYMD(d);
+      const txt = ((kText ? r[kText] : "") + " " + (kSrc ? r[kSrc] : "")).toString();
+
+      let val = 0;
+      if (f1Mode === 'docs')       val = 1;
+      else if (f1Mode === 'chars') val = txt.length/1000;
+      else if (f1Mode === 'keywords') val = (txt.match(KW_RE)||[]).length;
+      else {
+        const j = hitCount(RE_JUSTIFY, txt);
+        const dHit = hitCount(RE_DETER, txt);
+        const e = hitCount(RE_ESCALATE, txt);
+        val = j + dHit + e;
+      }
+
+      map.set(day, (map.get(day) || 0) + val);
+      dmin = dmin ? (d<dmin?d:dmin) : d;
+      dmax = dmax ? (d>dmax?d:dmax) : d;
+    }
+    if (!dmin || !dmax) return {count: rows.length, cover: "~", dates:[], f1:[], nci:[] as number[]};
+
+    const days = rangeDays(dmin, dmax);
+    const f1 = days.map(d => map.get(d) || 0);
+
+    const f2 = diffAbs(f1);
+    const f3 = secondDiffAbs(f1);
+
+    const s1 = movingAvg(f1, ma);
+    const s2 = movingAvg(f2, ma);
+    const s3 = movingAvg(f3, ma);
+
+    const mix = s1.map((_,i)=> w1*s1[i] + w2*s2[i] + w3*s3[i]);
+
+    const wStart = (winStart||minDateStr||days[0]);
+    const wEnd   = (winEnd  ||maxDateStr||days[days.length-1]);
+
+    const nci0 = minMaxNormByWindow(mix, days, wStart, wEnd);
+    const nci = shift(nci0, lead);
+
+    return {
+      count: rows.length,
+      cover: `${toYMD(dmin)} ~ ${toYMD(dmax)}`,
+      dates: days,
+      f1, nci
+    };
+  }, [rows, f1Mode, w1, w2, w3, ma, lead, winStart, winEnd, minDateStr, maxDateStr]);
+
+  // === 新增：前後 30 日檢視用切片（不影響計算，僅改顯示） ===
+  const view60 = useMemo(() => {
+    if (!preview) return {dates: [] as string[], nci: [] as number[]};
+    const d = parseYMD(eventDate);
+    if (!d) return {dates: preview.dates, nci: preview.nci};
+    const s = toYMD(addDays(d, -30));
+    const e = toYMD(addDays(d,  30));
+    let i0 = preview.dates.findIndex(t => t >= s);
+    if (i0 < 0) i0 = 0;
+    let i1 = -1;
+    for (let i=preview.dates.length-1; i>=0; i--){
+      if (preview.dates[i] <= e){ i1 = i; break; }
+    }
+    if (i1 < 0) i1 = preview.dates.length-1;
+    if (i0 > i1) return {dates: [], nci: []};
+    return {
+      dates: preview.dates.slice(i0, i1+1),
+      nci:   preview.nci.slice(i0, i1+1),
+    };
+  }, [preview, eventDate]);
+
+  // 下載分析結果 CSV（UTF-8 BOM）
+  function downloadNciCsv(){
+    if (!preview) return;
+    const lines = ["date,nci"];
+    for (let i=0;i<preview.dates.length;i++){
+      lines.push(`${preview.dates[i]},${preview.nci[i].toFixed(6)}`);
+    }
+    const csv = "\uFEFF" + lines.join("\r\n");
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "nci_result.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  /** ====== 圖表：加上 X 軸日期與 Y 軸說明 ====== */
+  function Chart({x, y}:{x:string[], y:number[]}){
+    if (x.length===0) return null;
+
+    const W=1000, H=360, pad=30;
+    const xs = x.map((_,i)=> pad + i*(W-2*pad)/Math.max(1,x.length-1));
+    const minY = 0, maxY = 1;
+    const ys = y.map(v => pad + (H-2*pad)*(1-(v-minY)/(maxY-minY)));
+    const d = xs.map((X,i)=> `${i===0?"M":"L"} ${X.toFixed(1)} ${ys[i].toFixed(1)}`).join(" ");
+
+    // X 軸刻度：<=14 天就每日；否則 6~9 個等距刻度
+    let tickCount = x.length <= 14 ? x.length : Math.min(9, Math.max(6, Math.floor((W-2*pad)/120)));
+    if (x.length === 1) tickCount = 1;
+    const idxCand: number[] = [];
+    for (let k=0; k<tickCount; k++){
+      const i = (tickCount===1) ? 0 : Math.round(k*(x.length-1)/(tickCount-1));
+      idxCand.push(i);
+    }
+    const seen = new Set<number>();
+    const xticks = idxCand.filter(i => (seen.has(i)? false : (seen.add(i), true)));
+
+    return (
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{border:"1px solid #eee", background:"#fff"}}>
+        <rect x={0} y={0} width={W} height={H} fill="#fff"/>
+
+        {/* Y 向網格與數值刻度（0..1） */}
+        {[0,0.25,0.5,0.75,1].map((g,idx)=>{
+          const Y = pad + (H-2*pad)*(1-g);
+          return <g key={idx}>
+            <line x1={pad} y1={Y} x2={W-pad} y2={Y} stroke="#eee"/>
+            <text x={pad-8} y={Y+4} fontSize="10" textAnchor="end">{g.toFixed(2)}</text>
+          </g>;
+        })}
+
+        {/* 軸線 */}
+        <line x1={pad} y1={pad} x2={pad} y2={H-pad} stroke="#333"/>
+        <line x1={pad} y1={H-pad} x2={W-pad} y2={H-pad} stroke="#333"/>
+
+        {/* X 軸日期刻度 */}
+        {xticks.map((i,idx)=>{
+          const X = xs[i];
+          return (
+            <g key={idx}>
+              <line x1={X} y1={H-pad} x2={X} y2={H-pad+6} stroke="#333"/>
+              <text x={X} y={H-pad+20} fontSize="10" textAnchor="middle">{x[i]}</text>
+            </g>
+          );
+        })}
+
+        {/* Y 軸說明 */}
+        <text x={12} y={H/2} transform={`rotate(-90, 12, ${H/2})`} fontSize="12" fill="#333">
+          NCI 值（0..1；事件窗內相對化）
+        </text>
+
+        {/* 折線 */}
+        <path d={d} fill="none" stroke="#3b82f6" strokeWidth={2}/>
+      </svg>
+    );
+  }
+
+  const count = preview?.count ?? 0;
+  const cover = preview?.cover ?? "~";
+
+  // === 新增：把事件窗套用到正規化（可選） ===
+  function applyEventWindowToNormalization(){
+    const d = parseYMD(eventDate);
+    if (!d) return;
+    setWinStart(toYMD(addDays(d, -30)));
+    setWinEnd(  toYMD(addDays(d,  30)));
+  }
+
+  // 要顯示哪一段：全段 or 前後 30 日
+  const xToShow = (preview && (lock60 ? view60.dates : preview.dates)) || [];
+  const yToShow = (preview && (lock60 ? view60.nci   : preview.nci))   || [];
+
+  return (
+    <main style={{maxWidth:1100, margin:"20px auto", padding:"0 16px", fontFamily:"-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,'Noto Sans TC',sans-serif"}}>
+      <h1 style={{fontSize:26, fontWeight:700}}>NCI：上傳 TSV/CSV 並預覽</h1>
+
+      <div style={{margin:"8px 0"}}>
+        <input type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" onChange={onPickFile}/>
+        {fileName && <span style={{marginLeft:12, color:"#555"}}>{fileName}</span>}
+      </div>
+
+      <div style={{display:"flex", gap:40, flexWrap:"wrap", margin:"10px 0 4px"}}>
+        <div><div style={{color:"#666"}}>筆數</div><div style={{fontSize:22, fontWeight:600}}>{count}</div></div>
+        <div><div style={{color:"#666"}}>涵蓋</div><div style={{fontSize:18}}>{cover}</div></div>
+      </div>
+
+      {/* 參數 */}
+      <div style={{display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:14, marginTop:8}}>
+        <label>MA 天數
+          <input type="number" value={ma} onChange={e=>setMA(+e.target.value||0)} style={ibox}/>
+        </label>
+        <label>Lead-time（日）
+          <input type="number" value={lead} onChange={e=>setLead(parseInt(e.target.value||"0"))} style={ibox}/>
+        </label>
+        <div/>
+        <label>事件窗起
+          <input type="date" value={winStart||minDateStr} onChange={e=>setWinStart(e.target.value)} style={ibox}/>
+        </label>
+        <label>事件窗訖
+          <input type="date" value={winEnd||maxDateStr} onChange={e=>setWinEnd(e.target.value)} style={ibox}/>
+        </label>
+        <div/>
+        <label>權重 f1（量/強度）
+          <input type="number" step="0.1" value={w1} onChange={e=>setW1(+e.target.value||0)} style={ibox}/>
+        </label>
+        <label>權重 f2（變化）
+          <input type="number" step="0.1" value={w2} onChange={e=>setW2(+e.target.value||0)} style={ibox}/>
+        </label>
+        <label>權重 f3（加速度）
+          <input type="number" step="0.1" value={w3} onChange={e=>setW3(+e.target.value||0)} style={ibox}/>
+        </label>
+      </div>
+
+      {/* f1 量度切換（多一個 intent） */}
+      <div style={{marginTop:8}}>
+        <label>f1 量度：
+          <select value={f1Mode} onChange={e=>setF1Mode(e.target.value as F1Mode)} style={{...ibox, width:300, marginLeft:6}}>
+            <option value="docs">每天文件數（原版）</option>
+            <option value="keywords">關鍵詞命中數</option>
+            <option value="chars">文字長度（千字）</option>
+            <option value="intent">意圖詞庫命中（正當化/威懲/升級）</option>
+          </select>
+        </label>
+        <div style={{marginTop:4, color:"#666", fontSize:12}}>
+          關鍵詞（keywords 模式）：{KEYWORDS.join("、")}
+        </div>
+      </div>
+
+      {/* 新增：事件日與 60 日視窗控制 */}
+      <div style={{marginTop:10, display:"flex", gap:12, alignItems:"center", flexWrap:"wrap"}}>
+        <label>事件日
+          <input type="date" value={eventDate} onChange={e=>setEventDate(e.target.value)} style={{...ibox, width:160}}/>
+        </label>
+        <label style={{display:"flex", alignItems:"center", gap:6}}>
+          <input type="checkbox" checked={lock60} onChange={e=>setLock60(e.target.checked)}/>
+          只看事件前後 30 日
+        </label>
+        <button onClick={applyEventWindowToNormalization} style={btn}>用此事件窗作正規化</button>
+      </div>
+
+      <div style={{marginTop:14}}>
+        <button onClick={downloadNciCsv} disabled={!preview} style={btn}>
+          下載分析結果 CSV（UTF-8 with BOM）
+        </button>
+      </div>
+
+      <h2 style={{marginTop:18}}>NCI（0..1）</h2>
+      {preview && <Chart x={xToShow} y={yToShow}/>}
+
+      {/* 預覽前 5 列 */}
+      {rows.length>0 && (
+        <>
+          <h3 style={{marginTop:16}}>前 5 列預覽</h3>
+          <table style={{width:"100%", borderCollapse:"collapse"}}>
+            <thead>
+              <tr>{headers.slice(0,3).map((h,i)=><th key={i} style={th}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+            {rows.slice(0,5).map((r,ri)=>(
+              <tr key={ri}>
+                {headers.slice(0,3).map((h,ci)=><td key={ci} style={td}>{String(r[h] ?? "")}</td>)}
+              </tr>
+            ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </main>
+  );
+}
+
+const ibox: React.CSSProperties = { display:"block", width:180, marginTop:4, padding:"6px 8px", border:"1px solid #ddd", borderRadius:6 };
+const btn: React.CSSProperties  = { padding:"8px 8px", border:"1px solid #ddd", borderRadius:8, background:"#fff", cursor:"pointer" };
+const th: React.CSSProperties   = { textAlign:"left", borderBottom:"1px solid #eee", padding:"6px 4px", background:"#fafafa", fontWeight:600 };
+const td: React.CSSProperties   = { borderBottom:"1px solid #f2f2f2", verticalAlign:"top", padding:"6px 4px", fontSize:14 };
+
+function findKey(obj:any, cands:string[]){
+  const keys = Object.keys(obj).map(k=>stripBom(k));
+  for (const c of cands){
+    const hit = keys.find(k => k.toLowerCase()===c.toLowerCase());
+    if (hit) return hit;
+  }
+  return null;
+}
+function findKeyFromArray(rows:any[], cands:string[]){
+  for (const r of rows){
+    const k = findKey(r, cands);
+    if (k) return k;
+  }
+  return cands[0];
+}

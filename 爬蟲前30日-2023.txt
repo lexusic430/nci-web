@@ -1,0 +1,244 @@
+/**
+ * crawl_list.js —— 外交部 / 國防部「列表翻頁」抓取（前後各 N 天）
+ * 用法：
+ *   node crawl_list.js 2023-04-05 30 0 E20230405_pm30.csv
+ *     ↑t0           ↑before ↑after  ↑輸出檔名
+ *
+ * 特色：
+ *  - 不用 readability，不用 sitemap。
+ *  - 直接掃「例行記者會 / 新聞發布 / 文字實錄」等列表頁，多個欄目＋翻頁。
+ *  - 依 t0 的前/後天數過濾，輸出 CSV（date,source,text）。
+ */
+
+"use strict";
+
+const { JSDOM } = require("jsdom");
+const { format: csvFormat } = require("@fast-csv/format");
+const { parseISO, isValid, subDays, addDays, isBefore, isAfter } = require("date-fns");
+const fs = require("fs");
+
+const UA = "Mozilla/5.0 (compatible; NCI-research-crawler/1.1; +https://example.org)";
+
+/** 列表頁「種子」 */
+const LIST_SEEDS = [
+  // ── 外交部（MFA）
+  // 新域名：例行記者會
+  { source: "外交部", base: "https://www.mfa.gov.cn/wjdt_674879/fyrbt_674889/index.html",
+    pageFmt: "https://www.mfa.gov.cn/wjdt_674879/fyrbt_674889/index_{i}.shtml", start: 0, end: 60 },
+  // 舊域名：例行記者會
+  { source: "外交部", base: "https://www.fmprc.gov.cn/wjdt_674879/fyrbt_674889/index.shtml",
+    pageFmt: "https://www.fmprc.gov.cn/wjdt_674879/fyrbt_674889/index_{i}.shtml", start: 0, end: 60 },
+  // 舊域名：例行記者會（有時按年度匯總）
+  { source: "外交部", base: "https://www.fmprc.gov.cn/fyrbt_673021/jzhsl_673025/index.shtml",
+    pageFmt: "https://www.fmprc.gov.cn/fyrbt_673021/jzhsl_673025/index_{i}.shtml", start: 0, end: 60 },
+
+  // ── 國防部（MND）——你點名要納入的 4 個欄位 + 例行記者會/實錄常見欄位
+  { source: "國防部", base: "http://www.mod.gov.cn/gfbw/xwfyr/yzxwfb/index.html",
+    pageFmt: "http://www.mod.gov.cn/gfbw/xwfyr/yzxwfb/index_{i}.html", start: 0, end: 60 },
+  { source: "國防部", base: "http://www.mod.gov.cn/gfbw/xwfyr/fyrthhdjzw/index.html",
+    pageFmt: "http://www.mod.gov.cn/gfbw/xwfyr/fyrthhdjzw/index_{i}.html", start: 0, end: 60 },
+  { source: "國防部", base: "http://www.mod.gov.cn/gfbw/xwfyr/lxjzh_246940/index.html",
+    pageFmt: "http://www.mod.gov.cn/gfbw/xwfyr/lxjzh_246940/index_{i}.html", start: 0, end: 60 },
+  { source: "國防部", base: "http://www.mod.gov.cn/gfbw/xwfyr/ztjzh/index.html",
+    pageFmt: "http://www.mod.gov.cn/gfbw/xwfyr/ztjzh/index_{i}.html", start: 0, end: 60 },
+
+  // 常見的「記者會/文字實錄」欄目（補充）
+  { source: "國防部", base: "https://www.mod.gov.cn/gfbw/qwfb/index.htm",
+    pageFmt: "https://www.mod.gov.cn/gfbw/qwfb/index_{i}.htm", start: 0, end: 60 },
+  { source: "國防部", base: "https://www.mod.gov.cn/gfbw/lljf/index.htm",
+    pageFmt: "https://www.mod.gov.cn/gfbw/lljf/index_{i}.htm", start: 0, end: 60 },
+];
+
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function fetchText(url) {
+  const res = await fetch(url, { headers: { "user-agent": UA } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  return await res.text();
+}
+
+function absUrl(u, base) {
+  try { return new URL(u, base).href; } catch { return null; }
+}
+
+function pickText(doc, sel) {
+  return Array.from(doc.querySelectorAll(sel))
+    .map(n => (n.textContent || "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** 解析日期：meta / 常見日期塊 / 全文掃描 */
+function tryParseDate(s) {
+  if (!s) return null;
+  s = String(s).replace(/\s+/g, " ").trim();
+
+  let m = s.match(/(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/);
+  if (m) {
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return isValid(d) ? d : null;
+  }
+  m = s.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+  if (m) {
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return isValid(d) ? d : null;
+  }
+  const iso = parseISO(s);
+  if (isValid(iso)) return iso;
+  return null;
+}
+
+function extractDateFromPage(html) {
+  const dom = new JSDOM(html);
+  const doc = dom.window.document;
+
+  // 1) 常見 meta
+  const metas = [
+    "article:published_time","pubdate","PublishTime","publishdate",
+    "og:updated_time","OriginalPublicationDate","date","PubDate","ctime"
+  ];
+  for (const k of metas) {
+    const m1 = doc.querySelector(`meta[property="${k}"]`);
+    const m2 = doc.querySelector(`meta[name="${k}"]`);
+    const v = (m1?.content || m2?.content || "").trim();
+    const d = tryParseDate(v);
+    if (d) return d;
+  }
+
+  // 2) 頁面上常見顯示區塊
+  const dateHints = pickText(doc, "time, .time, .pubtime, .date, .info, .source, .title, h1, h2, h3");
+  let d = tryParseDate(dateHints);
+  if (d) return d;
+
+  // 3) 萬不得已：全文掃描
+  d = tryParseDate(doc.body.textContent || "");
+  return d;
+}
+
+/** 抽正文（不用 readability）：優先 article/常見容器 → 不足時退回全部 <p>/<li> */
+function extractBodyText(html, url) {
+  const dom = new JSDOM(html, { url });
+  const doc = dom.window.document;
+
+  let root = doc.querySelector("article") || doc.querySelector("#content, #Article, .article, .content, .page-content, .TRS_Editor");
+  let pieces = [];
+  if (root) {
+    pieces = Array.from(root.querySelectorAll("p, li"))
+      .map(p => (p.textContent || "").trim())
+      .filter(Boolean);
+  }
+  if (pieces.length < 5) {
+    pieces = Array.from(doc.querySelectorAll("p, li"))
+      .map(p => (p.textContent || "").trim())
+      .filter(Boolean);
+  }
+  let text = pieces.join(" ").replace(/\s+/g, " ").trim();
+  if (text.length < 50) text = (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+  return text;
+}
+
+/** 寬鬆地挑可能的文章連結（盡量含 例行記者會/發布/文字實錄 關鍵片段） */
+function looksLikeArticleLink(href, text) {
+  const s = `${href} ${text}`;
+  return /(fyrbt|jzhsl|press|xwfyr|rt|qwfb|lljf|news|xw|fbh|zhibo|zb|jzh)/i.test(s);
+}
+
+async function collectFromList(seed) {
+  const out = [];
+  const seen = new Set();
+  const pages = [];
+
+  // 第 0 頁
+  pages.push(seed.base);
+  // 其他 index_i 頁
+  for (let i = seed.start; i <= seed.end; i++) {
+    const u = seed.pageFmt.replace("{i}", String(i));
+    if (!pages.includes(u)) pages.push(u);
+  }
+
+  for (const url of pages) {
+    try {
+      const html = await fetchText(url);
+      const dom = new JSDOM(html, { url });
+      const doc = dom.window.document;
+
+      const anchors = Array.from(doc.querySelectorAll("a")).slice(0, 1200);
+      for (const a of anchors) {
+        const href = absUrl(a.getAttribute("href") || "", url);
+        const text = (a.textContent || "").trim();
+        if (!href || !looksLikeArticleLink(href, text)) continue;
+        if (seen.has(href)) continue;
+        seen.add(href);
+        out.push({ href, text });
+      }
+      process.stdout.write(`\r[${seed.source}] 列表掃描中… 累計候選：${out.length}   `);
+      await sleep(150);
+    } catch {
+      await sleep(80);
+    }
+  }
+  process.stdout.write("\n");
+  return out;
+}
+
+async function main() {
+  const [t0Str, beforeStr, outFile] = process.argv.slice(2);
+  if (!t0Str || !beforeStr || !afterStr || !outFile) {
+    console.log("用法：node crawl_list.js <t0 YYYY-MM-DD> <beforeDays> <out.csv>");
+    console.log("例：  node crawl_list.js 2022-08-02 30 E20220802_pre30.csv");
+    process.exit(1);
+  }
+
+  const t0 = parseISO(t0Str);
+  if (!isValid(t0)) { console.error("t0 日期格式錯誤（YYYY-MM-DD）"); process.exit(1); }
+  const before = Number(beforeStr);
+  const after  = 0;
+  if (Number.isNaN(before) || Number.isNaN(after)) {
+    console.error("before / after 需為數字天數"); process.exit(1);
+  }
+
+  const startDate = subDays(t0, before);
+  const endDate   = addDays(t0, after);
+  console.log(`抓取區間：${startDate.toISOString().slice(0,10)} ～ ${endDate.toISOString().slice(0,10)}（含）`);
+
+  const ws = fs.createWriteStream(outFile, { encoding: "utf-8" });
+  const csv = csvFormat({ headers: ["date","source","text"] });
+  csv.pipe(ws);
+
+  let kept = 0, totalCandidates = 0;
+
+  for (const seed of LIST_SEEDS) {
+    console.log(`\n=== 掃描欄目：${seed.base} ===`);
+    const links = await collectFromList(seed);
+    totalCandidates += links.length;
+    console.log(`候選連結：${links.length}，開始抓正文…`);
+
+    for (const { href } of links) {
+      try {
+        const html = await fetchText(href);
+        const pub = extractDateFromPage(html);
+        if (!pub) { await sleep(40); continue; }
+
+        // 範圍過濾（含邊界）
+        if (isBefore(pub, startDate) || isAfter(pub, endDate)) { await sleep(30); continue; }
+
+        const text = extractBodyText(html, href);
+        if (!text || text.length < 80) { await sleep(30); continue; }
+
+        const dateStr = pub.toISOString().slice(0,10);
+        csv.write({ date: dateStr, source: seed.source, text });
+        kept++;
+        process.stdout.write(`\r已寫入 ${kept} 筆（來源：${seed.source}）…`);
+        await sleep(200); // 禮貌性限速
+      } catch {
+        await sleep(60);
+      }
+    }
+    process.stdout.write("\n");
+  }
+
+  csv.end();
+  console.log(`\n完成！候選總數：${totalCandidates}；實得：${kept} 筆 → ${outFile}`);
+}
+
+main().catch(err => { console.error(err); process.exit(1); });

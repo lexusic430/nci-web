@@ -1,0 +1,532 @@
+'use client';
+import React, { useMemo, useState } from "react";
+import Papa from "papaparse";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Separator } from "@/components/ui/separator";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend } from "recharts";
+import { Upload, Download, Play, Settings, Info, AlertTriangle } from "lucide-react";
+import { FileText } from "lucide-react";
+
+/**
+ * NCI 風險偵測網站（純前端）
+ * - 依照你提供的 Python 流水線與方法章邏輯實作：
+ *   Hs/As 的 Min–Max（事件窗內）、C=MA7((Hs+As)/2)、NCI=0.4/0.3/0.3、
+ *   Rt=標準化(Hs,As)+近窗斜率+持續性（MA）後以 log(1+來源數) 校正並 Min–Max。
+ * - 支援：CSV 上傳（transcripts、lexicon H/A）、參數調整（事件日/視窗/權重/門檻）、
+ *   表格/折線圖檢視、CSV 下載與 lead-time 計算。
+ *
+ * 檔案需求：
+ * - transcripts.csv：至少包含欄位 `date,source,text`（YYYY-MM-DD）。
+ * - lexicon_hostility.csv / lexicon_action.csv：每行一詞；支援 `re:` 正則前綴。
+ */
+
+// ---------- 工具函式 ----------
+const PUNCS = /[\s，。、“”「」『』！!？?\-—…：:；;（）()《》<>【】\[\]、]+/g;
+
+function normalizeText(s) {
+  if (!s) return "";
+  let t = s.replace(/<[^>]+>/g, " ") // 去 HTML tags
+           .replace(/&[a-zA-Z]+;/g, " ") // 去 HTML entities
+           .replace(/\s+/g, " ")
+           .trim();
+  return t;
+}
+
+function splitSentences(s) {
+  return (s.split(/[。！？!?；;\n]/).map(x => x.trim()).filter(Boolean));
+}
+
+function estimateTokens(text) {
+  if (!text) return 0;
+  return text.replace(PUNCS, "").length;
+}
+
+function loadCSV(file) {
+  return new Promise((resolve, reject) => {
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (res) => resolve(res.data),
+      error: (err) => reject(err)
+    });
+  });
+}
+
+function loadText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = (e) => reject(e);
+    reader.readAsText(file, "utf-8");
+  });
+}
+
+function parseLexiconText(txt) {
+  // 一行一項；CSV/純文字皆可
+  return txt\n    .split(/\r?\n/)\n    .map(s => s.trim())\n    .filter(Boolean);
+}
+
+function isRegexPattern(p) {
+  return p.startsWith("re:");
+}
+
+function patternHit(text, p) {
+  try {
+    if (isRegexPattern(p)) {
+      const re = new RegExp(p.slice(3));
+      return re.test(text) ? 1 : 0;
+    }
+    return text.includes(p) ? 1 : 0;
+  } catch {
+    return text.includes(p) ? 1 : 0; // 正則錯誤時改為子字串
+  }
+}
+
+function minMaxScale(arr) {
+  if (!arr.length) return [];
+  const min = Math.min(...arr);
+  const max = Math.max(...arr);
+  if (max - min === 0) return arr.map(() => 0);
+  return arr.map(v => (v - min) / (max - min));
+}
+
+function movingAverage(arr, k = 7) {
+  const n = arr.length;
+  if (!n) return [];
+  const out = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    const start = Math.max(0, i - (k - 1));
+    const slice = arr.slice(start, i + 1);
+    const mean = slice.reduce((a, b) => a + b, 0) / slice.length;
+    out[i] = mean;
+  }
+  return out;
+}
+
+function perThousand(count, tokens) {
+  return tokens > 0 ? (1000 * count) / tokens : 0;
+}
+
+function zscore(arr) {
+  const n = arr.length;
+  if (!n) return [];
+  const mean = arr.reduce((a,b)=>a+b,0)/n;
+  const sd = Math.sqrt(arr.reduce((a,b)=>a+(b-mean)**2,0)/n) || 0;
+  return arr.map(v => sd === 0 ? 0 : (v - mean) / sd);
+}
+
+function slopeRecent(arr, w = 5) {
+  const n = arr.length;
+  if (n < 2) return 0;
+  w = Math.min(w, n);
+  const y = arr.slice(n - w);
+  const t = [...Array(w).keys()];
+  const tMean = t.reduce((a,b)=>a+b,0)/w;
+  const yMean = y.reduce((a,b)=>a+b,0)/w;
+  let num = 0, den = 0;
+  for (let i=0;i<w;i++) { num += (t[i]-tMean)*(y[i]-yMean); den += (t[i]-tMean)**2; }
+  return den === 0 ? 0 : num/den;
+}
+
+function classifyNCI(v) {
+  if (v >= 0.7) return "高";
+  if (v >= 0.4) return "中";
+  return "低";
+}
+
+function toISODate(d) {
+  const dt = new Date(d);
+  return new Date(Date.UTC(dt.getFullYear(), dt.getMonth(), dt.getDate())).toISOString().slice(0,10);
+}
+
+// ---------- 主要 React 元件 ----------
+export default function App() {
+  const [transcriptsFile, setTranscriptsFile] = useState(null);
+  const [lexHFile, setLexHFile] = useState(null);
+  const [lexAFile, setLexAFile] = useState(null);
+
+  const [eventDate, setEventDate] = useState(""); // YYYY-MM-DD
+  const [windowDays, setWindowDays] = useState(30);
+  const [wH, setWH] = useState(0.4);
+  const [wA, setWA] = useState(0.3);
+  const [wC, setWC] = useState(0.3);
+  const [rtThr, setRtThr] = useState(0.7);
+  const [persist, setPersist] = useState(2);
+
+  const [status, setStatus] = useState("");
+  const [dailyRows, setDailyRows] = useState([]);
+  const [summary, setSummary] = useState(null);
+
+  const exampleLexH = useMemo(()=>[
+    "勿謂言之不預",
+    "後果自負",
+    "堅決反對",
+    "嚴正",
+    "懲戒",
+    "制裁",
+    "嚴厲",
+    "打擊",
+    "粉碎",
+    "re:絕不|決不|必將|不可逾越",
+  ],[]);
+  const exampleLexA = useMemo(()=>[
+    "聯合利劍",
+    "戰備警巡",
+    "海空聯合",
+    "常態化",
+    "演訓",
+    "實戰化",
+    "封控",
+    "圍台",
+    "巡航",
+    "懲治",
+  ],[]);
+
+  function sum(arr){ return arr.reduce((a,b)=>a+b,0); }
+
+  function firstAlertDay(Rt, dates, thr=0.7, k=2){
+    for (let i=0;i<=Rt.length-k;i++){
+      let ok = true;
+      for (let j=0;j<k;j++) if (Rt[i+j] < thr) { ok=false; break; }
+      if (ok) return dates[i];
+    }
+    return null;
+  }
+
+  async function handleRun() {
+    try {
+      setStatus("正在處理資料…");
+      if (!transcriptsFile) { setStatus("請先上傳 transcripts.csv"); return; }
+      if (!eventDate) { setStatus("請設定事件日 (YYYY-MM-DD)"); return; }
+
+      // 讀 transcripts
+      const transRows = await loadCSV(transcriptsFile);
+
+      // 讀 lexicon；若未提供，使用範例
+      let lexH = exampleLexH.slice();
+      let lexA = exampleLexA.slice();
+      if (lexHFile) {
+        const t = await loadText(lexHFile);
+        const arr = parseLexiconText(t);
+        if (arr.length) lexH = arr;
+      }
+      if (lexAFile) {
+        const t = await loadText(lexAFile);
+        const arr = parseLexiconText(t);
+        if (arr.length) lexA = arr;
+      }
+
+      // 篩選事件窗
+      const t0 = new Date(eventDate);
+      const start = new Date(t0); start.setDate(start.getDate() - Number(windowDays));
+      const end = new Date(t0); end.setDate(end.getDate() + Number(windowDays));
+
+      const inWindow = transRows.filter(r => {
+        const d = new Date(r.date);
+        return d >= start && d <= end;
+      });
+
+      if (!inWindow.length) { setStatus("事件窗內沒有資料，請確認日期或視窗天數"); return; }
+
+      // 逐篇處理：清理→分句→命中→累加
+      const dayAgg = new Map(); // key: isoDate → {H_hits, A_hits, tokens, sources:Set}
+
+      for (const r of inWindow) {
+        const dISO = toISODate(r.date);
+        const source = (r.source||"").trim() || "未標示";
+        const text = normalizeText(String(r.text||""));
+        const sents = splitSentences(text);
+
+        // 簡單去重：以句子集合去重（可改為 shingles/Jaccard）
+        const seen = new Set();
+        for (let sent of sents) {
+          if (!sent || seen.has(sent)) continue;
+          seen.add(sent);
+          const tokens = estimateTokens(sent);
+          let H_hits = 0, A_hits = 0;
+          for (const p of lexH) H_hits += patternHit(sent, p);
+          for (const p of lexA) A_hits += patternHit(sent, p);
+
+          const rec = dayAgg.get(dISO) || { H_hits:0, A_hits:0, tokens:0, sources:new Set() };
+          rec.H_hits += H_hits;
+          rec.A_hits += A_hits;
+          rec.tokens += tokens;
+          rec.sources.add(source);
+          dayAgg.set(dISO, rec);
+        }
+      }
+
+      // 生成每日陣列並依日期排序
+      const daily = [...dayAgg.entries()].map(([date, v]) => ({
+        date,
+        H_hits: v.H_hits,
+        A_hits: v.A_hits,
+        tokens: v.tokens,
+        src_count: v.sources.size,
+      })).sort((a,b)=> new Date(a.date) - new Date(b.date));
+
+      // H/A 每千字
+      daily.forEach(r => {
+        r.H_perk = perThousand(r.H_hits, r.tokens);
+        r.A_perk = perThousand(r.A_hits, r.tokens);
+      });
+
+      // 事件窗內 Min–Max → Hs, As
+      const Hperk = daily.map(d=>d.H_perk);
+      const Aperk = daily.map(d=>d.A_perk);
+      const Hs = minMaxScale(Hperk);
+      const As = minMaxScale(Aperk);
+      const C = movingAverage(Hs.map((v,i)=>0.5*(v + As[i])) , 7);
+
+      // 權重檢查
+      const wSum = Number(wH)+Number(wA)+Number(wC);
+      if (Math.abs(wSum - 1) > 1e-6) {
+        setStatus("wH+wA+wC 必須等於 1");
+        return;
+      }
+
+      // NCI & 分級
+      const NCI = Hs.map((v,i)=> Number(wH)*v + Number(wA)*As[i] + Number(wC)*C[i]);
+      const NCI_class = NCI.map(classifyNCI);
+
+      // Rt：標準化→core→MA→融合→來源校正→MinMax
+      const Hz = zscore(Hs);
+      const Az = zscore(As);
+      const core = Hz.map((v,i)=> 0.5*v + 0.5*Az[i]);
+      const ma = movingAverage(core, 7);
+      const RtRaw = core.map((v,i)=> 0.6*v + 0.4*ma[i]);
+      const RtAdj = RtRaw.map((v,i)=> v * Math.log1p(daily[i].src_count));
+      const Rt = minMaxScale(RtAdj);
+
+      // 首次有效警示日 & 前移
+      const dates = daily.map(d=>d.date);
+      const alertDay = firstAlertDay(Rt, dates, Number(rtThr), Number(persist));
+      const t0ISO = toISODate(eventDate);
+      let leadTime = null;
+      if (alertDay) {
+        const t0D = new Date(t0ISO);
+        const aD = new Date(alertDay);
+        leadTime = Math.round((t0D - aD) / (1000*3600*24));
+      }
+
+      // 封裝輸出
+      const result = daily.map((d,i)=> ({
+        ...d,
+        Hs: Hs[i],
+        As: As[i],
+        C: C[i],
+        NCI: NCI[i],
+        NCI_class: NCI_class[i],
+        Rt: Rt[i],
+      }));
+
+      setDailyRows(result);
+      setSummary({
+        t0: t0ISO,
+        start: toISODate(start),
+        end: toISODate(end),
+        alertDay,
+        leadTime,
+        rows: result.length
+      });
+      setStatus("處理完成。可於下方查看圖表/表格並下載 CSV。");
+    } catch (e) {
+      console.error(e);
+      setStatus("發生錯誤：" + (e?.message || e));
+    }
+  }
+
+  function downloadCSV() {
+    if (!dailyRows.length) return;
+    const headers = [
+      "date","H_hits","A_hits","tokens","src_count","H_perk","A_perk","Hs","As","C","NCI","NCI_class","Rt"
+    ];
+    const lines = [headers.join(",")];
+    for (const r of dailyRows) {
+      lines.push([
+        r.date, r.H_hits, r.A_hits, r.tokens, r.src_count,
+        r.H_perk, r.A_perk, r.Hs, r.As, r.C, r.NCI, r.NCI_class, r.Rt
+      ].join(","));
+    }
+    const blob = new Blob([lines.join("\n")], {type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "daily_out.csv"; a.click(); URL.revokeObjectURL(url);
+  }
+
+  const chartData = useMemo(()=> dailyRows.map(r=>({
+    date: r.date, NCI: r.NCI, Rt: r.Rt
+  })), [dailyRows]);
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-6">
+      <div className="max-w-6xl mx-auto space-y-6">
+        <header className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">NCI 敘事脅迫指數／Rt 日風險 —— 前端網站</h1>
+            <p className="text-sm text-gray-600">依照你的研究方法與 Python 流水線規格實作（0.4/0.3/0.3、MA7、事件窗內 Min–Max、Lead-time）。</p>
+          </div>
+        </header>
+
+        <Card className="shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2"><Upload className="w-5 h-5"/>資料與詞庫上傳</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid md:grid-cols-3 gap-4">
+              <div>
+                <Label htmlFor="trans">transcripts.csv（必填）</Label>
+                <Input id="trans" type="file" accept=".csv" onChange={e=>setTranscriptsFile(e.target.files?.[0]||null)} />
+              </div>
+              <div>
+                <Label htmlFor="lexh">lexicon_hostility.csv（可選）</Label>
+                <Input id="lexh" type="file" accept=".csv,.txt" onChange={e=>setLexHFile(e.target.files?.[0]||null)} />
+              </div>
+              <div>
+                <Label htmlFor="lexa">lexicon_action.csv（可選）</Label>
+                <Input id="lexa" type="file" accept=".csv,.txt" onChange={e=>setLexAFile(e.target.files?.[0]||null)} />
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="grid md:grid-cols-3 gap-4">
+              <div>
+                <Label>事件日 t0</Label>
+                <Input type="date" value={eventDate} onChange={e=>setEventDate(e.target.value)} />
+              </div>
+              <div>
+                <Label>觀察窗（天）</Label>
+                <Input type="number" min={1} value={windowDays} onChange={e=>setWindowDays(Number(e.target.value))} />
+              </div>
+              <div className="rounded-xl bg-gray-100 p-3 text-sm text-gray-700">
+                <p>欄位需求：<code>date, source, text</code>。日期格式：YYYY-MM-DD。</p>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-4 gap-4">
+              <div>
+                <Label>wH（敵意強度）</Label>
+                <Input type="number" step="0.05" value={wH} onChange={e=>setWH(Number(e.target.value))} />
+              </div>
+              <div>
+                <Label>wA（行動暗示）</Label>
+                <Input type="number" step="0.05" value={wA} onChange={e=>setWA(Number(e.target.value))} />
+              </div>
+              <div>
+                <Label>wC（一致性）</Label>
+                <Input type="number" step="0.05" value={wC} onChange={e=>setWC(Number(e.target.value))} />
+              </div>
+              <div>
+                <Label>Rt 門檻 / 連續天</Label>
+                <div className="flex gap-2">
+                  <Input type="number" step="0.05" value={rtThr} onChange={e=>setRtThr(Number(e.target.value))} />
+                  <Input type="number" min={1} value={persist} onChange={e=>setPersist(Number(e.target.value))} />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <Button onClick={handleRun} className="gap-2"><Play className="w-4 h-4"/>執行分析</Button>
+              <Button variant="secondary" onClick={downloadCSV} disabled={!dailyRows.length} className="gap-2"><Download className="w-4 h-4"/>下載 CSV</Button>
+              <div className="text-sm text-gray-600">{status}</div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {summary && (
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2"><Info className="w-5 h-5"/>事件窗摘要</CardTitle>
+            </CardHeader>
+            <CardContent className="grid md:grid-cols-5 gap-4 text-sm">
+              <div><div className="text-gray-500">事件日 t0</div><div className="font-semibold">{summary.t0}</div></div>
+              <div><div className="text-gray-500">視窗開始</div><div className="font-semibold">{summary.start}</div></div>
+              <div><div className="text-gray-500">視窗結束</div><div className="font-semibold">{summary.end}</div></div>
+              <div><div className="text-gray-500">首次警示日</div><div className="font-semibold">{summary.alertDay || "—"}</div></div>
+              <div><div className="text-gray-500">Lead-time（天）</div><div className="font-semibold">{summary.leadTime ?? "—"}</div></div>
+            </CardContent>
+          </Card>
+        )}
+
+        {dailyRows.length > 0 && (
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle>指標折線圖</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData} margin={{ top: 10, right: 20, bottom: 0, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                    <YAxis domain={[0,1]} tick={{ fontSize: 12 }} />
+                    <Tooltip />
+                    <Legend />
+                    <ReferenceLine y={0.7} strokeDasharray="4 4" />
+                    <Line type="monotone" dataKey="NCI" dot={false} />
+                    <Line type="monotone" dataKey="Rt" dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {dailyRows.length > 0 && (
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2"><FileText className="w-5 h-5"/>每日表</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-100 text-left">
+                      {["date","H_hits","A_hits","tokens","src_count","H_perk","A_perk","Hs","As","C","NCI","NCI_class","Rt"].map(h=> (
+                        <th key={h} className="px-2 py-2 font-semibold whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dailyRows.map((r,idx)=> (
+                      <tr key={idx} className="border-b">
+                        <td className="px-2 py-1 whitespace-nowrap">{r.date}</td>
+                        <td className="px-2 py-1">{r.H_hits}</td>
+                        <td className="px-2 py-1">{r.A_hits}</td>
+                        <td className="px-2 py-1">{r.tokens}</td>
+                        <td className="px-2 py-1">{r.src_count}</td>
+                        <td className="px-2 py-1">{r.H_perk?.toFixed?.(4)}</td>
+                        <td className="px-2 py-1">{r.A_perk?.toFixed?.(4)}</td>
+                        <td className="px-2 py-1">{r.Hs?.toFixed?.(4)}</td>
+                        <td className="px-2 py-1">{r.As?.toFixed?.(4)}</td>
+                        <td className="px-2 py-1">{r.C?.toFixed?.(4)}</td>
+                        <td className="px-2 py-1">{r.NCI?.toFixed?.(4)}</td>
+                        <td className="px-2 py-1">{r.NCI_class}</td>
+                        <td className="px-2 py-1">{r.Rt?.toFixed?.(4)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        <footer className="text-xs text-gray-500 pt-6">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 mt-0.5"/>
+            <p>
+              注意：本前端工具僅供研究與預警輔助；NCI/Rt 與分級邏輯遵循你提供的方法章設計，
+              在未經 HITL 覆核前，不用於對外指派或決策。必要時請以你方驗證集進行權重與校準參數之外部確認。
+            </p>
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}
