@@ -2,511 +2,888 @@
 
 import React, { useMemo, useState } from 'react';
 
-/* ==================== 關鍵詞 ==================== */
-/** 一般「關鍵詞」（不含你剛剛那 9 個；它們已移到威懲黃籃） */
+/** =========================================================
+ * 0) keywords（保留）
+ * ========================================================= */
 const KEYWORDS = [
-  '台灣','台湾','台海','軍演','演訓','佩洛西','制裁','嚴正','堅決','強烈',
-  '導彈','东风','實彈','实弹','行动','行動','嚴重後果','严重后果','維權','維穩'
+  "台灣","台湾","台海","軍演","演訓","佩洛西","制裁","嚴正","堅決","強烈",
+  "導彈","东风","實彈","实弹","行动","行動","嚴重後果","維權","維穩"
 ];
-const KW_RE = new RegExp(KEYWORDS.map(esc).join('|'), 'g');
 
-/* 台灣主題詞（決定是否屬台灣議題，必須共現） */
-const TW_TERMS = [
-  '台灣','台湾','臺灣','台海','臺海','兩岸','两岸','海峽','海峡','環台','环台',
-  '台獨','台独','台灣當局','台湾當局','民進黨','民进党','金門','金门','馬祖','马祖','澎湖',
-  '台北','臺北','高雄','新北','台中','臺中','台澎金馬','海峽中線','臺澎金馬'
-];
-const TW_RE = new RegExp(TW_TERMS.map(esc).join('|'), 'g');
-
-/* 三籃字典：意圖 / 威懲 / 升級 */
+/** =========================================================
+ * 1) 三籃字典
+ * ========================================================= */
 const BAG_JUSTIFY = [
-  '正當','正当','正當化','正当化','合理','必要','不得已','維護主權','维护主权',
-  '捍衛','捍卫','維護','维护','嚴正','严正','堅決','坚决','嚴肅','严肃','正告','郑重'
+  "維護","捍衛","堅持","反對","遏制","不承諾放棄","不承諾放棄（武力）","武力","致力於","實現",
+  "主權","領土完整","一中原則","九二共識","和平統一","一國兩制","核心利益","民族復興","歷史任務",
+  "祖國統一","底線","紅線","基本方針","堅定","堅決","不可動搖","矢志不渝","一貫","明確",
+  "正當","合法","堅強","意志","堅強（意志）"
 ];
+
 const BAG_DETER = [
-  '威懾','威慑','懲罰','惩罚','制裁','反制','嚴重後果','严重后果','必將付出代价','付出代價',
-  '警告','譴責','谴责','報復','报复','強硬措施','强硬措施','停約','中止','斷交','驅逐','驅離','扣押',
-  // 你要求的「黃色（新增）」＋「原先藍色新增的 9 個也併入黃色」
-  '災難性後果','灾难性后果','發出錯誤信號','发出错误信号','死路一條','死路一条','粉碎',
-  '外部勢力干涉','外部势力干涉','嚴重威脅','严重威胁','分裂','反對','反对','威脅','威胁'
+  "嚴正警告","嚴懲","粉碎","清算","打擊","玩火","自焚","埋葬","挑釁","分裂","勾連","注定失敗",
+  "後果自負","死路一條","付出代價","頭破血流","妄想","災難性後果","雷霆之勢","絕不姑息",
+  "萬劫不復","歷史罪人","勿謂言之不預","必將","一定會","不得不","不惜一切代價","任何時候","任何形式"
 ];
+
 const BAG_ESCALATE = [
-  '升級','升级','加碼','加码','擴大','扩大','加強','加强','進一步','进一步','強化','强化','加快',
-  '節奏','节奏','頻次','频次','多點','多域','多方向','聯合演訓','联合演训','環台','环台','封控','封鎖','封锁',
-  '實彈','实弹','導彈','导弹','遠火','远火','演習範圍','演习范围','臨時管制區','临时管制区'
+  "演練","演習","聯合演訓","警巡","戰備","封鎖","實彈射擊","抵近","懾壓","常態化","巡航","越線",
+  "立體","全天候","進一步","升級","採取","採取（必要）行動","必要行動","反制","拭目以待","奉陪到底",
+  "絕不坐視","反擊","加大","加大（力度）","台島周邊","海空域","越過中線","多軍兵種","全要素",
+  "關門打狗","區域拒止"
 ];
-const RE_JUSTIFY  = makeRe(BAG_JUSTIFY);
-const RE_DETER    = makeRe(BAG_DETER);
-const RE_ESCALATE = makeRe(BAG_ESCALATE);
 
-/* 顏色 */
-const COLOR_BLUE  = '#3b82f6'; // NCI
-const COLOR_GREEN = '#16a34a'; // 意圖
-const COLOR_YELL  = '#f59e0b'; // 威懲
-const COLOR_RED   = '#ef4444'; // 升級
+const EXERCISE_ORDER = [
+  "2022環台軍演",
+  "2023聯合利劍",
+  "2023海空聯合戰備警巡演練",
+  "聯合利劍2024A",
+  "聯合利劍2024B",
+  "海峽雷霆2025",
+  "正義使命2025",
+];
 
-/* 工具 */
-function esc(s: string){ return s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&'); }
-function makeRe(list: string[]){ return new RegExp(list.map(esc).join('|'), 'g'); }
-function hitCount(re: RegExp, s: string){ return (s.match(re) || []).length; }
-function stripBom(s: string){ return s.replace(/^\uFEFF/, ''); }
-function toYMD(d: Date){ return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString().slice(0,10); }
+const TAIWAN_LEXICON = [
+  "台灣","台湾","臺灣","台海","臺海","台湾地区","台岛","台島",
+  "兩岸","两岸","海峽兩岸","海峡两岸","中線","中线","台島周邊","台岛周边"
+];
+
+/** ====== 小工具 ====== */
+function esc(s: string){ return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function uniqStr(arr: string[]) {
+  const s = new Set<string>();
+  for (const x of arr) {
+    const v = String(x || "").trim();
+    if (v) s.add(v);
+  }
+  return Array.from(s);
+}
+function makeRe(list: string[]){ return new RegExp(uniqStr(list).map(esc).join("|"), "g"); }
+function stripBom(s: string){ return s.replace(/^\uFEFF/, ""); }
+function toYMD(d: Date){
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+    .toISOString()
+    .slice(0,10);
+}
+
+// 🔥 修改點 1：增強版日期解析 (解決日期讀不到或帶時間的問題)
 function parseYMD(s: string){
-  const t = s.trim().replace(/["']/g,'');
-  const m = t.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+  let t = String(s ?? "").trim().replace(/["']/g,"");
+  // 移除時間部分 (例如 "2024-05-20 10:00:00")
+  if (t.includes(" ")) t = t.split(" ")[0];
+  if (t.includes("T")) t = t.split("T")[0]; // ISO 格式
+
+  const m = t.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
   if (!m) return null;
   const d = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
   return isNaN(d.getTime()) ? null : d;
 }
-function addDays(d: Date, n: number){ const x = new Date(d); x.setUTCDate(x.getUTCDate()+n); return x; }
-function rangeDays(a: Date, b: Date){ const out:string[]=[]; for(let d=new Date(a); d<=b; d=addDays(d,1)) out.push(toYMD(d)); return out; }
-function movingAvg(arr:number[], k:number){ if(k<=1) return arr.slice(); const out=new Array(arr.length).fill(0); let sum=0; for(let i=0;i<arr.length;i++){ sum+=arr[i]; if(i>=k) sum-=arr[i-k]; out[i]=i>=k-1?sum/k:sum/(i+1);} return out; }
-function diffAbs(a:number[]){ const out=new Array(a.length).fill(0); for(let i=1;i<a.length;i++) out[i]=Math.abs(a[i]-a[i-1]); return out; }
-function secondDiffAbs(a:number[]){ return diffAbs(diffAbs(a)); }
-function shift(a:number[], lead:number){ const n=a.length, out=new Array(n).fill(0); for(let i=0;i<n;i++){ const j=i+lead; if(j>=0&&j<n) out[i]=a[j]; } return out; }
-function minMaxNormByWindow(series:number[], dates:string[], winStart:string, winEnd:string){
-  let lo=+Infinity, hi=-Infinity;
-  for(let i=0;i<dates.length;i++) if(dates[i]>=winStart && dates[i]<=winEnd){ if(series[i]<lo) lo=series[i]; if(series[i]>hi) hi=series[i]; }
-  if(!isFinite(lo)||!isFinite(hi)||hi===lo){ lo=Math.min(...series); hi=Math.max(...series); if(hi===lo) return series.map(()=>0.5); }
-  const span=hi-lo; return series.map(v=>Math.max(0,Math.min(1,(v-lo)/span)));
+
+function addDays(d: Date, n: number){
+  const x = new Date(d);
+  x.setUTCDate(x.getUTCDate()+n);
+  return x;
+}
+function rangeDays(a: Date, b: Date){
+  const out: string[] = [];
+  for(let d=new Date(a); d<=b; d=addDays(d,1)) out.push(toYMD(d));
+  return out;
 }
 
-/* 解析 CSV/TSV */
-function parseTable(text: string): {rows:any[], headers:string[], delim:string}{
-  const raw = stripBom(text.replace(/\r\n/g,'\n'));
-  const firstLine = raw.split('\n')[0] ?? '';
-  const delim = firstLine.includes('\t') ? '\t' : ',';
-  const lines = raw.split('\n').filter(l=>l.length>0);
+// 修改點：新增 Z-Score 計算 (符合論文標準化邏輯)
+function zScore(arr: number[]) {
+  const n = arr.length;
+  if (n === 0) return [];
+  const mean = arr.reduce((a, b) => a + b, 0) / n;
+  const variance = arr.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / n;
+  const std = Math.sqrt(variance);
+  // 若標準差為0 (數值全相同)，回傳0
+  if (std === 0) return arr.map(() => 0);
+  return arr.map(v => (v - mean) / std);
+}
+
+function movingAvg(arr: number[], k: number){
+  if (k<=1) return arr.slice();
+  const out: number[] = new Array(arr.length).fill(0);
+  let sum = 0;
+  for (let i=0;i<arr.length;i++){
+    sum += arr[i];
+    if (i>=k) sum -= arr[i-k];
+    out[i] = i>=k-1 ? sum/k : sum/(i+1);
+  }
+  return out;
+}
+function shift(arr: number[], lead: number){
+  const n = arr.length;
+  const out = new Array(n).fill(0);
+  for(let i=0;i<n;i++){
+    const j = i + lead;
+    if (j>=0 && j<n) out[i] = arr[j];
+  }
+  return out;
+}
+function minMaxNormByWindow(series: number[], dates: string[], winStart: string, winEnd: string){
+  let lo = +Infinity, hi = -Infinity;
+  for (let i=0;i<dates.length;i++){
+    if (dates[i]>=winStart && dates[i]<=winEnd){
+      if (series[i]<lo) lo = series[i];
+      if (series[i]>hi) hi = series[i];
+    }
+  }
+  if (!isFinite(lo) || !isFinite(hi) || hi===lo) {
+    lo = Math.min(...series);
+    hi = Math.max(...series);
+    if (hi===lo){ return series.map(_=>0.5); }
+  }
+  const span = hi - lo;
+  return series.map(v => Math.max(0, Math.min(1, (v - lo) / span)));
+}
+
+/** ====== regex ====== */
+const TW_RE = makeRe(TAIWAN_LEXICON);
+
+/** ====== 斷句 ====== */
+function splitSentences(text: string){
+  const s = String(text ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return [];
+  const parts = s.split(/(?<=[。！？!?；;])\s+|\n+/g).map(x=>x.trim()).filter(Boolean);
+  if (parts.length<=1){
+    return s.split(/[，,、]\s*/g).map(x=>x.trim()).filter(Boolean);
+  }
+  return parts;
+}
+function taiwanIssueSentences(text: string){
+  const sents = splitSentences(text);
+  return sents.filter(s => TW_RE.test(s));
+}
+
+/** =========================================================
+ * 4) 關鍵詞上色
+ * ========================================================= */
+type TokCat = 'justify' | 'deter' | 'escalate';
+type HiTok = { t: string; cat: TokCat; bg: string; fg: string; prio: number };
+
+const HILITE_TOKENS: HiTok[] = (() => {
+  const prio = { escalate: 3, deter: 2, justify: 1 } as const;
+  const m = new Map<string, HiTok>();
+
+  const put = (t: string, cat: TokCat) => {
+    const token = String(t||"").trim();
+    if (!token) return;
+    const style =
+      cat === 'escalate' ? { bg:'#fee2e2', fg:'#991b1b' } :
+      cat === 'deter'    ? { bg:'#fef3c7', fg:'#92400e' } :
+                           { bg:'#dcfce7', fg:'#065f46' };
+    const cur: HiTok = { t: token, cat, ...style, prio: prio[cat] };
+    const old = m.get(token);
+    if (!old || cur.prio > old.prio) m.set(token, cur);
+  };
+
+  for (const t of BAG_JUSTIFY)  put(t, 'justify');
+  for (const t of BAG_DETER)    put(t, 'deter');
+  for (const t of BAG_ESCALATE) put(t, 'escalate');
+
+  const all = Array.from(m.values());
+  all.sort((a,b)=> b.t.length - a.t.length);
+  return all;
+})();
+
+function highlightSentence3Colors(s: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  const text = s || "";
+  const n = text.length;
+  let i = 0;
+  let key = 0;
+
+  const startsWithAt = (str: string, sub: string, pos: number) => {
+    return str.substring(pos, pos + sub.length) === sub;
+  };
+
+  const bestAt = (pos:number): HiTok | null => {
+    for (const tok of HILITE_TOKENS){
+      if (startsWithAt(text, tok.t, pos)) return tok;
+    }
+    return null;
+  };
+
+  const findNextMatch = (from: number): number => {
+    let next = n;
+    for (const tok of HILITE_TOKENS) {
+      const j = text.indexOf(tok.t, from);
+      if (j !== -1 && j < next) next = j;
+    }
+    return next;
+  };
+
+  while (i < n) {
+    const best = bestAt(i);
+    if (best) {
+      out.push(
+        <span
+          key={key++}
+          style={{
+            background: best.bg, color: best.fg,
+            padding: "0 2px", borderRadius: 4, margin: "0 1px",
+            boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone",
+          }}
+        >
+          {best.t}
+        </span>
+      );
+      i += best.t.length;
+      continue;
+    }
+    const next = findNextMatch(i + 1);
+    const chunk = text.slice(i, next);
+    out.push(<span key={key++}>{chunk}</span>);
+    i = next;
+  }
+  return out;
+}
+
+/** =========================================================
+ * 5) 解析 CSV/TSV
+ * ========================================================= */
+function parseTable(text: string): {rows: any[], headers: string[], delim: string}{
+  const raw = stripBom(text.replace(/\r\n/g, "\n"));
+  const firstLine = raw.split("\n")[0] ?? "";
+  const delim = firstLine.includes("\t") ? "\t" : ",";
+
+  const lines = raw.split("\n").filter(l => l.length>0);
   if (lines.length===0) return {rows:[], headers:[], delim};
-  const headers = parseLine(lines[0], delim).map(h=>stripBom(h).replace(/(^"|"$)/g,''));
-  const rows:any[] = [];
+
+  const headers = parseLine(lines[0], delim).map(h => stripBom(h).replace(/(^"|"$)/g,""));
+  const rows: any[] = [];
   for (let i=1;i<lines.length;i++){
-    const cols = parseLine(lines[i], delim); if(cols.length===0) continue;
-    const obj:any = {}; for(let j=0;j<headers.length;j++) obj[headers[j]] = (cols[j] ?? '').replace(/(^"|"$)/g,'');
+    const cols = parseLine(lines[i], delim);
+    if (cols.length===0) continue;
+    const obj: any = {};
+    for (let j=0;j<headers.length;j++){
+      obj[headers[j]] = (cols[j] ?? "").replace(/(^"|"$)/g,"");
+    }
     rows.push(obj);
   }
   return {rows, headers, delim};
 }
-function parseLine(line:string, delim:string){
-  const out:string[]=[]; let cur='', q=false;
-  for(let i=0;i<line.length;i++){ const c=line[i];
-    if(q){ if(c=== '"'){ if(line[i+1] === '"'){ cur+='"'; i++; } else q=false; } else cur+=c; }
-    else { if(c=== '"') q=true; else if(c===delim){ out.push(cur); cur=''; } else cur+=c; }
+function parseLine(line: string, delim: string){
+  const out: string[] = [];
+  let cur = "", q = false;
+  for (let i=0;i<line.length;i++){
+    const c = line[i];
+    if (q){
+      if (c === '"'){
+        if (line[i+1] === '"'){ cur += '"'; i++; }
+        else q = false;
+      }else cur += c;
+    }else{
+      if (c === '"') q = true;
+      else if (c === delim) { out.push(cur); cur=""; }
+      else cur += c;
+    }
   }
-  out.push(cur); return out;
-}
-
-/* 型別 */
-type F1Mode = 'docs' | 'keywords' | 'chars' | 'intent';
-type ViewLine = 'all' | 'nci' | 'justify' | 'deter' | 'escalate';
-
-/* 記者提問判斷（不計分） */
-function isReporterQuestion(txt:string){
-  const t = txt.trim();
-  return /^(（?記者[^）]*）?\s*|^記者[:：]|^提問[:：]|^問[:：]|^Q[:：])/m.test(t);
-}
-
-/* 斷句＋台灣議題過濾（僅保留：含台灣語彙 且 含三籃或一般關鍵詞 的句子） */
-function splitSentences(s:string){
-  return s.replace(/\s+/g,' ').split(/(?<=[。！？!?；;])/g).map(x=>x.trim()).filter(Boolean);
-}
-function keepTaiwanIntentSentence(sent:string){
-  // 共現檢查：台灣語彙 + （三籃或一般關鍵詞）
-  TW_RE.lastIndex = RE_JUSTIFY.lastIndex = RE_DETER.lastIndex = RE_ESCALATE.lastIndex = KW_RE.lastIndex = 0;
-  const hasTW = TW_RE.test(sent);
-  if (!hasTW) return false;
-  return RE_JUSTIFY.test(sent) || RE_DETER.test(sent) || RE_ESCALATE.test(sent) || KW_RE.test(sent);
-}
-
-/* 高亮（綠/黃/紅可同時存在） */
-function highlight(text:string, enable:boolean){
-  if (!enable || !text) return text;
-  let out = text;
-  RE_JUSTIFY.lastIndex = RE_DETER.lastIndex = RE_ESCALATE.lastIndex = 0;
-  out = out.replace(RE_JUSTIFY,  m=>`<mark style="background:transparent;color:${COLOR_GREEN};font-weight:700">${m}</mark>`);
-  out = out.replace(RE_DETER,    m=>`<mark style="background:${COLOR_YELL};color:#111;padding:0 2px;border-radius:3px">${m}</mark>`);
-  out = out.replace(RE_ESCALATE, m=>`<mark style="background:${COLOR_RED};color:#fff;padding:0 2px;border-radius:3px">${m}</mark>`);
+  out.push(cur);
   return out;
 }
 
-/* ==================== 主元件 ==================== */
 export default function Page(){
-  const [fileName, setFileName] = useState<string>('');
-  const [rows, setRows] = useState<any[]>([]);
-  const [headers, setHeaders] = useState<string[]>([]);
-  const [delim, setDelim] = useState<string>(',');
+  const [fileName, setFileName] = useState<string>("");
+  const [rows, setRows]           = useState<any[]>([]);
+  const [headers, setHeaders]     = useState<string[]>([]);
+  
+  // 🔥 修改點 2：加入載入狀態與錯誤訊息
+  const [loading, setLoading]     = useState(false);
+  const [errorMsg, setErrorMsg]   = useState("");
 
-  // 參數
-  const [w1, setW1] = useState(0.4);
-  const [w2, setW2] = useState(0.3);
-  const [w3, setW3] = useState(0.3);
-  const [ma, setMA] = useState(7);
+  // 🔥 修改點 3：加入分頁顯示 (解決瀏覽器卡死問題)
+  const [visibleCount, setVisibleCount] = useState(100);
+
+  // 參數 - 修改點：預設權重設為論文的 1.0, 1.5, 2.0
+  const [w1, setW1] = useState(1.0); // 意圖 (Intent)
+  const [w2, setW2] = useState(1.5); // 威懲 (Punish)
+  const [w3, setW3] = useState(2.0); // 升級 (Escalate)
+  const [ma, setMA] = useState(3);   // 平滑 (Smoothing) 預設 3 日
   const [lead, setLead] = useState(0);
-  const [f1Mode, setF1Mode] = useState<F1Mode>('docs');
 
-  // 額外控制
-  const [enableHighlight, setEnableHighlight] = useState(true);
-  const [dropReporterQ, setDropReporterQ] = useState(true);
+  // 選單
+  const [selectedExercise, setSelectedExercise] = useState<string>("全部");
 
-  // 顯示哪一條線
-  const [viewLine, setViewLine] = useState<ViewLine>('all');
+  // 視覺
+  const [showNci, setShowNci] = useState(true);
+  const [showJ, setShowJ]     = useState(true);
+  const [showD, setShowD]     = useState(true);
+  const [showE, setShowE]     = useState(true);
 
-  // 事件窗（依資料起迄）
-  const {minDateStr, maxDateStr} = useMemo(()=>{
-    const ds:Date[] = [];
-    for (const r of rows){
-      const k = findKey(r, ['date','日期']); const d = k ? parseYMD(String(r[k])) : null;
-      if (d) ds.push(d);
-    }
-    if (ds.length===0) return {minDateStr:'', maxDateStr:''};
-    ds.sort((a,b)=>+a-+b);
-    return {minDateStr:toYMD(ds[0]), maxDateStr:toYMD(ds[ds.length-1])};
-  },[rows]);
+  // 事件窗
+  const [winStart, setWinStart] = useState<string>("");
+  const [winEnd,   setWinEnd]   = useState<string>("");
 
-  const [winStart, setWinStart] = useState('');
-  const [winEnd, setWinEnd] = useState('');
-
-  /* 讀檔 */
-  function onPickFile(e:React.ChangeEvent<HTMLInputElement>){
-    const f = e.target.files?.[0]; if(!f) return;
+  /** 讀檔 */
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>){
+    const f = e.target.files?.[0];
+    if (!f) return;
+    
+    // 設定載入中
+    setLoading(true);
+    setErrorMsg("");
     setFileName(f.name);
+
     const fr = new FileReader();
     fr.onload = () => {
-      const text = typeof fr.result === 'string' ? fr.result : new TextDecoder('utf-8').decode(fr.result as ArrayBuffer);
-      const {rows, headers, delim} = parseTable(text);
-      setRows(rows); setHeaders(headers); setDelim(delim);
-      if (!winStart && !winEnd){ setWinStart(prev=>prev||''); setWinEnd(prev=>prev||''); }
+      try {
+        const text = typeof fr.result === 'string'
+          ? fr.result
+          : new TextDecoder("utf-8").decode(fr.result as ArrayBuffer);
+
+        const {rows, headers} = parseTable(text);
+        
+        if (rows.length === 0) {
+            setErrorMsg("讀取失敗：檔案內容為空或格式無法解析。");
+        } else {
+            setRows(rows);
+            setHeaders(headers);
+            setSelectedExercise("全部");
+            setWinStart("");
+            setWinEnd("");
+            // 重置分頁顯示
+            setVisibleCount(100);
+        }
+      } catch (err) {
+        console.error(err);
+        setErrorMsg("發生未預期的錯誤，請檢查 Console");
+      } finally {
+        // 解除載入中
+        setLoading(false);
+      }
     };
     fr.readAsText(f);
   }
 
-  /* 清洗：去記者提問 → 斷句取台灣議題短句；無短句則丟棄（=> 只剩發言人回答且與台灣共現） */
+  /** 欄位偵測 */
+  const keys = useMemo(()=>{
+    const kEx   = findKeyFromArray(rows, ["所屬軍演","军演","事件","event","exercise","exercise_name","campaign"]);
+    const kDate = findKeyFromArray(rows, ["date","日期","Date"]);
+    const kSrc  = findKeyFromArray(rows, ["source","來源","Media","media"]);
+    const kText = findKeyFromArray(rows, ["text","內容","content","Content","內文"]);
+    const kLink = findKeyFromArray(rows, ["Link","link","URL","url"]);
+    
+    // ⭐ 修改點：偵測人工校正(優先) 與 自動預測(候補)
+    const kManual = findKeyFromArray(rows, ["人工校正", "人工標註", "Manual_Label"]);
+    const kAuto   = findKeyFromArray(rows, ["Signal_Type", "BERT_Label", "BERT_預測結果(文字)", "Signal"]);
+    
+    return { kEx, kDate, kSrc, kText, kLink, kManual, kAuto };
+  },[rows]);
+
+  /** 資料篩選 */
+  const cleanedRows = useMemo(()=>{
+    if (rows.length===0) return [];
+    const set7 = new Set(EXERCISE_ORDER);
+    const {kEx} = keys;
+    return rows.filter(r => set7.has(String(r[kEx] ?? "").trim()));
+  }, [rows, keys]);
+
   const filteredRows = useMemo(()=>{
-    if (rows.length===0) return rows;
-    const kText = findKeyFromArray(rows, ['text','內容','content','文本']);
-    const kSrc  = findKeyFromArray(rows, ['source','來源','source_name']);
-    return rows
-      .filter(r=>{
-        const txt = ((kText ? r[kText] : '') + ' ' + (kSrc ? r[kSrc] : '')).toString();
-        return dropReporterQ ? !isReporterQuestion(txt) : true;
-      })
-      .map(r=>{
-        const raw = ((kText ? r[kText] : '') + ' ' + (kSrc ? r[kSrc] : '')).toString();
-        const kept = splitSentences(raw).filter(keepTaiwanIntentSentence);
-        const shortText = kept.join(' ');
-        return shortText ? {...r, [kText]: shortText} : null;
-      })
-      .filter(Boolean) as any[];
-  },[rows, dropReporterQ]);
+    if (cleanedRows.length===0) return [];
+    if (selectedExercise === "全部") return cleanedRows;
+    const {kEx} = keys;
+    return cleanedRows.filter(r => String(r[kEx] ?? "").trim() === selectedExercise);
+  }, [cleanedRows, selectedExercise, keys]);
 
-  /* 計算四條指數＋表格（全部以 filteredRows 為準） */
+  const exerciseOptions = useMemo(()=>{
+    return ["全部", ...EXERCISE_ORDER];
+  }, []);
+
+  const {minDateStr, maxDateStr} = useMemo(()=>{
+    const ds: Date[] = [];
+    for (const r of filteredRows){
+      const raw = String(r[keys.kDate] ?? "");
+      const d = parseYMD(raw);
+      if (d) ds.push(d);
+    }
+    if (ds.length===0) return {minDateStr:"", maxDateStr:""};
+    ds.sort((a,b)=>+a-+b);
+    return {minDateStr: toYMD(ds[0]), maxDateStr: toYMD(ds[ds.length-1])};
+  }, [filteredRows, keys]);
+
+  function onChangeExercise(v: string){
+    setSelectedExercise(v);
+    setWinStart("");
+    setWinEnd("");
+    // 切換演習時也重置分頁
+    setVisibleCount(100);
+  }
+
+  /** ⭐ 核心計算：修正為符合論文的 Z-score + 階梯權重 */
   const preview = useMemo(()=>{
-    const R = filteredRows;
-    if (R.length===0) return null;
+    if (filteredRows.length===0) return null;
 
-    const kDate = findKeyFromArray(R, ['date','日期']);
-    const kText = findKeyFromArray(R, ['text','內容','content','文本']);
-    const kSrc  = findKeyFromArray(R, ['source','來源','source_name']);
-
-    const dayMap = new Map<string, {f1:number; j:number; d:number; e:number}>();
-    let dmin:Date|undefined, dmax:Date|undefined;
-
-    const tfJ = new Map<string, number>();
-    const tfD = new Map<string, number>();
-    const tfE = new Map<string, number>();
-
-    for (const r of R){
-      const raw = kDate ? String(r[kDate]) : '';
-      const d = parseYMD(raw); if(!d) continue;
-      const day = toYMD(d);
-      const txt = ((kText ? r[kText] : '') + ' ' + (kSrc ? r[kSrc] : '')).toString();
-
-      // f1（若選 keywords，也只會在過濾後的、與台灣共現的短句上計數）
-      let f1Val = 0;
-      if (f1Mode==='docs') f1Val = 1;
-      else if (f1Mode==='chars') f1Val = txt.length/1000;
-      else if (f1Mode==='keywords') f1Val = (txt.match(KW_RE)||[]).length;
-
-      const j = hitCount(RE_JUSTIFY, txt);
-      const dHit = hitCount(RE_DETER, txt);
-      const e = hitCount(RE_ESCALATE, txt);
-
-      // 詞頻
-      for (const w of BAG_JUSTIFY){ const c=(txt.match(new RegExp(esc(w),'g'))||[]).length; if(c) tfJ.set(w,(tfJ.get(w)||0)+c); }
-      for (const w of BAG_DETER){   const c=(txt.match(new RegExp(esc(w),'g'))||[]).length; if(c) tfD.set(w,(tfD.get(w)||0)+c); }
-      for (const w of BAG_ESCALATE){const c=(txt.match(new RegExp(esc(w),'g'))||[]).length; if(c) tfE.set(w,(tfE.get(w)||0)+c); }
-
-      const prev = dayMap.get(day) || {f1:0,j:0,d:0,e:0};
-      dayMap.set(day, {f1: prev.f1 + (f1Mode==='intent' ? j+dHit+e : f1Val), j: prev.j + j, d: prev.d + dHit, e: prev.e + e});
-
+    const kDate  = keys.kDate;
+    
+    // 1. 日期範圍
+    let dmin: Date|undefined, dmax: Date|undefined;
+    for (const r of filteredRows){
+      const d = parseYMD(String(r[kDate] ?? ""));
+      if (!d) continue;
       dmin = dmin ? (d<dmin?d:dmin) : d;
       dmax = dmax ? (d>dmax?d:dmax) : d;
     }
-
-    if (!dmin || !dmax){
-      return {
-        count: R.length, cover:'~', dates:[], nci:[], jIdx:[], dIdx:[], eIdx:[],
-        totals:{J:0,D:0,E:0}, proportions:{J:0,D:0,E:0}, tfTop:{J:[],D:[],E:[]}, rowsForPreview:[], kDate:'date', kText:'text'
-      } as const;
-    }
+    if (!dmin || !dmax) return null;
 
     const days = rangeDays(dmin, dmax);
-    const f1 = days.map(d => (dayMap.get(d)?.f1)||0);
-    const jSeries = days.map(d => (dayMap.get(d)?.j)||0);
-    const dSeries = days.map(d => (dayMap.get(d)?.d)||0);
-    const eSeries = days.map(d => (dayMap.get(d)?.e)||0);
 
-    const s1 = movingAvg(f1, ma);
-    const s2 = movingAvg(diffAbs(f1), ma);
-    const s3 = movingAvg(secondDiffAbs(f1), ma);
-    const mix = s1.map((_,i)=> w1*s1[i] + w2*s2[i] + w3*s3[i]);
+    // 2. 初始化
+    // const mapScore = new Map<string, number>();  // 原本總分邏輯暫不使用
+    const mapJ = new Map<string, number>();      
+    const mapD = new Map<string, number>();      
+    const mapE = new Map<string, number>();      
 
-    const wStart = (winStart || days[0]);
-    const wEnd   = (winEnd   || days[days.length-1]);
+    // 3. 遍歷資料
+    for (const r of filteredRows){
+      const d = parseYMD(String(r[kDate] ?? ""));
+      if (!d) continue;
+      const day = toYMD(d);
 
-    const nci0 = minMaxNormByWindow(mix, days, wStart, wEnd);
-    const jIdx0 = minMaxNormByWindow(movingAvg(jSeries, ma), days, wStart, wEnd);
-    const dIdx0 = minMaxNormByWindow(movingAvg(dSeries, ma), days, wStart, wEnd);
-    const eIdx0 = minMaxNormByWindow(movingAvg(eSeries, ma), days, wStart, wEnd);
+      // 🛑 雙重取值邏輯
+      const rawMan  = String(r[keys.kManual] ?? "").trim();
+      const rawAuto = String(r[keys.kAuto]   ?? "").trim();
+
+      let targetStr = "";
+      if (rawMan && rawMan.toLowerCase() !== "nan") {
+        targetStr = rawMan;
+      } else {
+        targetStr = rawAuto; // Fallback
+      }
+
+      // 解析類別
+      let val = 0;
+      if (!isNaN(parseFloat(targetStr))) {
+        val = parseInt(targetStr, 10);
+      } else if (targetStr.includes("_")) {
+        val = parseInt(targetStr.split("_")[0], 10);
+      }
+
+      // 分類計數
+      if (val === 1) mapJ.set(day, (mapJ.get(day)||0) + 1); // 意圖 (0或1視代碼定義，假設1為意圖)
+      if (val === 2) mapD.set(day, (mapD.get(day)||0) + 1); // 威懲
+      if (val >= 3)  mapE.set(day, (mapE.get(day)||0) + 1); // 升級 (假設3為升級)
+    }
+
+    // 4. 序列化 (原始頻次)
+    const seriesJ = days.map(d => mapJ.get(d) || 0); 
+    const seriesD = days.map(d => mapD.get(d) || 0); 
+    const seriesE = days.map(d => mapE.get(d) || 0); 
+
+    // 5. NCI 運算 (修改點：Z-score + 加權)
+    // (A) Z-Score 標準化
+    const zJ = zScore(seriesJ);
+    const zD = zScore(seriesD);
+    const zE = zScore(seriesE);
+
+    // (B) 加權聚合 (NCI = w1*Z_J + w2*Z_D + w3*Z_E)
+    // w1=意圖, w2=威懲, w3=升級
+    const rawNci = days.map((_, i) => {
+        return (w1 * zJ[i]) + (w2 * zD[i]) + (w3 * zE[i]);
+    });
+
+    // (C) 平滑化 (MA)
+    const smoothedNci = movingAvg(rawNci, ma);
+
+    // (D) 視覺化歸一 (維持原本圖表的 0-1 顯示)
+    const wStart = (winStart||minDateStr||days[0]);
+    const wEnd   = (winEnd  ||maxDateStr||days[days.length-1]);
+
+    const nci0 = minMaxNormByWindow(smoothedNci, days, wStart, wEnd);
+    
+    // 平滑化各類別曲線供顯示
+    const sJ_smooth = movingAvg(seriesJ, ma);
+    const sD_smooth = movingAvg(seriesD, ma);
+    const sE_smooth = movingAvg(seriesE, ma);
+    
+    const j0 = minMaxNormByWindow(sJ_smooth, days, wStart, wEnd);
+    const d0 = minMaxNormByWindow(sD_smooth, days, wStart, wEnd);
+    const e0 = minMaxNormByWindow(sE_smooth, days, wStart, wEnd);
 
     const nci = shift(nci0, lead);
-    const jIdx = shift(jIdx0, lead);
-    const dIdx = shift(dIdx0, lead);
-    const eIdx = shift(eIdx0, lead);
+    const jN  = shift(j0, lead);
+    const dN  = shift(d0, lead);
+    const eN  = shift(e0, lead);
 
-    const sum = (arr:number[])=>arr.reduce((a,b)=>a+b,0);
-    const totals = { J: sum(jSeries), D: sum(dSeries), E: sum(eSeries) };
-    const totalHits = totals.J + totals.D + totals.E || 1;
-    const proportions = { J: totals.J/totalHits, D: totals.D/totalHits, E: totals.E/totalHits };
-
-    const topN = (m:Map<string,number>, n=10)=>Array.from(m.entries()).sort((a,b)=>b[1]-a[1]).slice(0,n);
+    const totJ = seriesJ.reduce((a,b)=>a+b,0);
+    const totD = seriesD.reduce((a,b)=>a+b,0);
+    const totE = seriesE.reduce((a,b)=>a+b,0);
+    const totAll = totJ + totD + totE; 
 
     return {
-      count:R.length,
-      cover:`${toYMD(dmin)} ~ ${toYMD(dmax)}`,
-      dates:days,
-      nci, jIdx, dIdx, eIdx,
-      totals, proportions,
-      tfTop:{ J: topN(tfJ), D: topN(tfD), E: topN(tfE) },
-      rowsForPreview:R, kDate, kText
-    } as const;
-  },[filteredRows, f1Mode, w1,w2,w3, ma, lead, winStart, winEnd]);
+      dates: days, cover: `${toYMD(dmin)} ~ ${toYMD(dmax)}`, count: filteredRows.length,
+      lineNci: nci, lineJ: jN, lineD: dN, lineE: eN,
+      totJ, totD, totE, totAll,
+      wStart, wEnd,
+    };
+  }, [filteredRows, keys, ma, lead, w1, w2, w3, winStart, winEnd, minDateStr, maxDateStr]);
 
-  /* 下載四線 CSV */
+  const top10 = useMemo(()=>{
+    if (filteredRows.length===0) return null;
+    const textAll = filteredRows.map(r => `${r[keys.kText] ?? ""} ${r[keys.kSrc] ?? ""}`).join("\n");
+    const countPerToken = (tokens: string[]) => {
+      const uniq = uniqStr(tokens).sort((a,b)=>b.length-a.length);
+      const arr = uniq.map(t=>{
+        const re = new RegExp(esc(t), "g");
+        const c = (textAll.match(re) || []).length;
+        return { t, c };
+      }).filter(x=>x.c>0);
+      arr.sort((a,b)=>b.c-a.c);
+      return arr.slice(0,10);
+    };
+    return {
+      J: countPerToken(BAG_JUSTIFY),
+      D: countPerToken(BAG_DETER),
+      E: countPerToken(BAG_ESCALATE),
+    };
+  }, [filteredRows, keys]);
+
   function downloadNciCsv(){
     if (!preview) return;
-    const lines = ['date,nci,intent_justify,intent_deter,intent_escalate'];
+    const lines = ["date,nci"];
     for (let i=0;i<preview.dates.length;i++){
-      lines.push(`${preview.dates[i]},${preview.nci[i].toFixed(6)},${preview.jIdx[i].toFixed(6)},${preview.dIdx[i].toFixed(6)},${preview.eIdx[i].toFixed(6)}`);
+      lines.push(`${preview.dates[i]},${preview.lineNci[i].toFixed(6)}`);
     }
-    const csv = '\uFEFF' + lines.join('\r\n');
-    const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
-    const a = document.createElement('a');
+    const csv = "\uFEFF" + lines.join("\r\n");
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+    const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = 'nci_with_intents.csv';
-    a.click(); URL.revokeObjectURL(a.href);
+    a.download = "nci_result.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
   }
 
-  /* 圖表（可單選） */
-  function ChartMulti({x, series}:{x:string[]; series:Array<{label:string;color:string;data:number[]}>}){
-    if (x.length===0) return null;
-    const W=1000, H=380, pad=30;
+  function MultiLineChart(props: { x: string[]; nci: number[]; j: number[]; d: number[]; e: number[]; showNci: boolean; showJ: boolean; showD: boolean; showE: boolean; }){
+    const {x, nci, j, d, e, showNci, showJ, showD, showE} = props;
+    if (!x.length) return null;
+    const W=1000, H=360, pad=36;
     const xs = x.map((_,i)=> pad + i*(W-2*pad)/Math.max(1,x.length-1));
     const minY=0, maxY=1;
-    const pathFor=(data:number[])=>{
-      const ys = data.map(v=> pad + (H-2*pad)*(1-(v-minY)/(maxY-minY)));
-      return xs.map((X,i)=>`${i===0?'M':'L'} ${X.toFixed(1)} ${ys[i].toFixed(1)}`).join(' ');
+    const yMap = (arr:number[]) => arr.map(v => pad + (H-2*pad)*(1-(v-minY)/(maxY-minY)));
+    const toPath = (arr:number[]) => {
+      const ys = yMap(arr);
+      return xs.map((X,i)=> `${i===0?"M":"L"} ${X.toFixed(1)} ${ys[i].toFixed(1)}`).join(" ");
     };
-
-    let tickCount = x.length<=14 ? x.length : Math.min(9, Math.max(6, Math.floor((W-2*pad)/120)));
-    if (x.length===1) tickCount = 1;
-    const idxCand:number[]=[]; for(let k=0;k<tickCount;k++){ const i = (tickCount===1)?0:Math.round(k*(x.length-1)/(tickCount-1)); idxCand.push(i); }
-    const seen = new Set<number>(); const xticks = idxCand.filter(i=> seen.has(i)?false:(seen.add(i),true));
+    let tickCount = x.length <= 14 ? x.length : Math.min(9, Math.max(6, Math.floor((W-2*pad)/120)));
+    if (x.length === 1) tickCount = 1;
+    const idxCand: number[] = [];
+    for (let k=0; k<tickCount; k++){
+      const i = (tickCount===1) ? 0 : Math.round(k*(x.length-1)/(tickCount-1));
+      idxCand.push(i);
+    }
+    const seen = new Set<number>();
+    const xticks = idxCand.filter(i => (seen.has(i)? false : (seen.add(i), true)));
+    const C_NCI = "#2563eb"; 
+    const C_J   = "#16a34a"; 
+    const C_D   = "#f59e0b"; 
+    const C_E   = "#dc2626"; 
 
     return (
-      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{border:'1px solid #eee', background:'#fff'}}>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{border:"1px solid #eee", background:"#fff"}}>
         <rect x={0} y={0} width={W} height={H} fill="#fff"/>
-        {[0,0.25,0.5,0.75,1].map((g,idx)=>{ const Y=pad+(H-2*pad)*(1-g); return <g key={idx}><line x1={pad} y1={Y} x2={W-pad} y2={Y} stroke="#eee"/><text x={pad-8} y={Y+4} fontSize="10" textAnchor="end">{g.toFixed(2)}</text></g>; })}
-        <line x1={pad} y1={pad} x2={pad} y2={H-pad} stroke="#333"/><line x1={pad} y1={H-pad} x2={W-pad} y2={H-pad} stroke="#333"/>
-        {xticks.map((i,idx)=>{ const X=xs[i]; return (<g key={idx}><line x1={X} y1={H-pad} x2={X} y2={H-pad+6} stroke="#333"/><text x={X} y={H-pad+20} fontSize="10" textAnchor="middle">{x[i]}</text></g>); })}
-        <text x={12} y={H/2} transform={`rotate(-90, 12, ${H/2})`} fontSize="12" fill="#333">指數值（0..1；事件窗內相對化）</text>
-        {series.map((s,idx)=> (<path key={idx} d={pathFor(s.data)} fill="none" stroke={s.color} strokeWidth={2.5}/>))}
-        {/* 圖例 */}
-        <g>{series.map((s,i)=> (<g key={i} transform={`translate(${pad + i*180}, 8)`}><rect width={18} height={3} y={6} fill={s.color}/><text x={24} y={10} fontSize="12">{s.label}</text></g>))}</g>
+        {[0,0.25,0.5,0.75,1].map((g,idx)=>{
+          const Y = pad + (H-2*pad)*(1-g);
+          return (
+            <g key={idx}>
+              <line x1={pad} y1={Y} x2={W-pad} y2={Y} stroke="#eee"/>
+              <text x={pad-10} y={Y+4} fontSize="10" textAnchor="end">{g.toFixed(2)}</text>
+            </g>
+          );
+        })}
+        <line x1={pad} y1={pad} x2={pad} y2={H-pad} stroke="#333"/>
+        <line x1={pad} y1={H-pad} x2={W-pad} y2={H-pad} stroke="#333"/>
+        {xticks.map((i,idx)=>{
+          const X = xs[i];
+          return (
+            <g key={idx}>
+              <line x1={X} y1={H-pad} x2={X} y2={H-pad+6} stroke="#333"/>
+              <text x={X} y={H-pad+20} fontSize="10" textAnchor="middle">{x[i]}</text>
+            </g>
+          );
+        })}
+        <text x={14} y={H/2} transform={`rotate(-90, 14, ${H/2})`} fontSize="12" fill="#333">
+          NCI 脅迫指數 (Z-score 歸一化)
+        </text>
+        {showJ && <path d={toPath(j)}   fill="none" stroke={C_J}   strokeWidth={2} />}
+        {showD && <path d={toPath(d)}   fill="none" stroke={C_D}   strokeWidth={2} />}
+        {showE && <path d={toPath(e)}   fill="none" stroke={C_E}   strokeWidth={2} />}
+        {showNci && <path d={toPath(nci)} fill="none" stroke={C_NCI} strokeWidth={2.5} />}
+        <g>
+          <rect x={W-pad-330} y={pad-22} width={320} height={18} fill="#fff" opacity={0.9}/>
+          <text x={W-pad-320} y={pad-8} fontSize="11" fill="#333">
+            {showJ ? "意圖-L1(綠)  " : ""}
+            {showD ? "威懲-L2(黃)  " : ""}
+            {showE ? "升級-L3(紅)  " : ""}
+            {showNci ? "NCI(藍)" : ""}
+          </text>
+        </g>
       </svg>
     );
   }
 
   const count = preview?.count ?? 0;
-  const cover = preview?.cover ?? '~';
+  const cover = preview?.cover ?? "~";
+  
+  // 🔥🔥🔥 這裡做了 Lazy Loading，防止一次渲染 3000 行卡死瀏覽器
+  const tableRows = useMemo(()=>{
+    if (filteredRows.length===0) return [];
+    const kDate = keys.kDate;
+    const arr = filteredRows.slice();
+    arr.sort((a,b)=>{
+      const da = parseYMD(String(a[kDate]??""))?.getTime() ?? 0;
+      const db = parseYMD(String(b[kDate]??""))?.getTime() ?? 0;
+      return da - db;
+    });
+    return arr;
+  }, [filteredRows, keys]);
 
-  const chartSeries = useMemo(()=>{
-  if (!preview) return [];
-  const menu: Record<ViewLine, Array<{label:string;color:string;data:number[]}>> = {
-    all: [
-      { label:'NCI（藍）',  color:COLOR_BLUE,  data: [...preview.nci] },
-      { label:'意圖（綠）',  color:COLOR_GREEN, data: [...preview.jIdx] },
-      { label:'威懲（黃）',  color:COLOR_YELL,  data: [...preview.dIdx] },
-      { label:'升級（紅）',  color:COLOR_RED,   data: [...preview.eIdx] },
-    ],
-    nci:      [{ label:'NCI（藍）',  color:COLOR_BLUE,  data: [...preview.nci] }],
-    justify:  [{ label:'意圖（綠）',  color:COLOR_GREEN, data: [...preview.jIdx] }],
-    deter:    [{ label:'威懲（黃）',  color:COLOR_YELL,  data: [...preview.dIdx] }],
-    escalate: [{ label:'升級（紅）',  color:COLOR_RED,   data: [...preview.eIdx] }],
-  };
-  return menu[viewLine];
-}, [preview, viewLine]);
+  const visibleRows = tableRows.slice(0, visibleCount);
 
   return (
-    <main style={{maxWidth:1100, margin:'20px auto', padding:'0 16px', fontFamily:"-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,'Noto Sans TC',sans-serif"}}>
-      <h1 style={{fontSize:26, fontWeight:700}}>NCI：上傳 TSV/CSV 並預覽（台灣議題過濾版）</h1>
+    <main style={styles.main}>
+      <h1 style={styles.h1}>NCI：上傳資料並分析（效能優化版）</h1>
+      
+      {errorMsg && (
+        <div style={{background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:8, marginBottom:10, border:"1px solid #fecaca"}}>
+          🚨 {errorMsg}
+        </div>
+      )}
 
-      <div style={{margin:'8px 0'}}>
-        <input type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" onChange={onPickFile}/>
-        {fileName && <span style={{marginLeft:12, color:'#555'}}>{fileName}</span>}
+      <div style={{margin:"8px 0", display:"flex", alignItems:"center"}}>
+        <input type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" onChange={onPickFile} disabled={loading}/>
+        {loading && <span style={{marginLeft:10, color:"#2563eb", fontWeight:600}}>⚡ 處理中，請稍候...</span>}
       </div>
 
-      <div style={{display:'flex', gap:40, flexWrap:'wrap', margin:'10px 0 4px'}}>
-        <div><div style={{color:'#666'}}>筆數（過濾後）</div><div style={{fontSize:22, fontWeight:600}}>{count}</div></div>
-        <div><div style={{color:'#666'}}>涵蓋</div><div style={{fontSize:18}}>{cover}</div></div>
-      </div>
-
-      {/* 參數 */}
-      <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:14, marginTop:8}}>
-        <label>MA 天數<input type="number" value={ma} onChange={e=>setMA(+e.target.value||0)} style={ibox}/></label>
-        <label>Lead-time（日）<input type="number" value={lead} onChange={e=>setLead(parseInt(e.target.value||'0'))} style={ibox}/></label>
-        <div/>
-        <label>事件窗起<input type="date" value={winStart||minDateStr} onChange={e=>setWinStart(e.target.value)} style={ibox}/></label>
-        <label>事件窗訖<input type="date" value={winEnd||maxDateStr} onChange={e=>setWinEnd(e.target.value)} style={ibox}/></label>
-        <div/>
-        <label>權重 f1<input type="number" step="0.1" value={w1} onChange={e=>setW1(+e.target.value||0)} style={ibox}/></label>
-        <label>權重 f2<input type="number" step="0.1" value={w2} onChange={e=>setW2(+e.target.value||0)} style={ibox}/></label>
-        <label>權重 f3<input type="number" step="0.1" value={w3} onChange={e=>setW3(+e.target.value||0)} style={ibox}/></label>
-      </div>
-
-      {/* 選單 */}
-      <div style={{marginTop:8, display:'flex', gap:18, alignItems:'center', flexWrap:'wrap'}}>
-        <label>f1 量度：
-          <select value={f1Mode} onChange={e=>setF1Mode(e.target.value as F1Mode)} style={{...ibox, width:300, marginLeft:6}}>
-            <option value="docs">每天文件數（原版）</option>
-            <option value="keywords">關鍵詞命中數</option>
-            <option value="chars">文字長度（千字）</option>
-            <option value="intent">意圖詞庫命中（正當化/威懲/升級）</option>
-          </select>
-        </label>
-        <label>顯示指數：
-          <select value={viewLine} onChange={e=>setViewLine(e.target.value as ViewLine)} style={{...ibox, width:220, marginLeft:6}}>
-            <option value="all">全部</option>
-            <option value="nci">NCI（藍）</option>
-            <option value="justify">意圖（綠）</option>
-            <option value="deter">威懲（黃）</option>
-            <option value="escalate">升級（紅）</option>
-          </select>
-        </label>
-        <label style={{display:'inline-flex', alignItems:'center', gap:6}}>
-          <input type="checkbox" checked={enableHighlight} onChange={e=>setEnableHighlight(e.target.checked)}/> 文字高亮
-        </label>
-        <label style={{display:'inline-flex', alignItems:'center', gap:6}}>
-          <input type="checkbox" checked={dropReporterQ} onChange={e=>setDropReporterQ(e.target.checked)}/> 清除「記者提問」
-        </label>
-      </div>
-
-      <div style={{marginTop:14}}>
-        <button onClick={downloadNciCsv} disabled={!preview} style={btn}>下載四線 CSV（NCI＋意圖/威懲/升級）</button>
-      </div>
-
-      <h2 style={{marginTop:18}}>指數走勢</h2>
-      {preview && <ChartMulti x={[...preview.dates]} series={chartSeries} />}
-
-      {/* 統計 */}
-      {preview && (
-        <section style={{marginTop:22}}>
-          <h3>整體統計（台灣議題斷句後，事件窗內）</h3>
-          <table style={{width:'100%', borderCollapse:'collapse', marginTop:6}}>
-            <thead><tr><th style={th}>類別</th><th style={th}>命中總數</th><th style={th}>比例</th></tr></thead>
-            <tbody>
-              <tr><td style={td}>意圖（正當化/決心）</td><td style={td}>{preview.totals.J}</td><td style={td}>{(preview.proportions.J*100).toFixed(2)}%</td></tr>
-              <tr><td style={td}>威懲</td><td style={td}>{preview.totals.D}</td><td style={td}>{(preview.proportions.D*100).toFixed(2)}%</td></tr>
-              <tr><td style={td}>升級</td><td style={td}>{preview.totals.E}</td><td style={td}>{(preview.proportions.E*100).toFixed(2)}%</td></tr>
-              <tr><td style={{...td,fontWeight:700}}>合計</td><td style={{...td,fontWeight:700}}>{preview.totals.J+preview.totals.D+preview.totals.E}</td><td style={{...td,fontWeight:700}}>100%</td></tr>
-            </tbody>
-          </table>
-
-          <h3 style={{marginTop:18}}>關鍵詞 Top-10（各類別）</h3>
-          <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:12}}>
-            {[
-              {title:'意圖（綠）', color:COLOR_GREEN, data:preview.tfTop.J, total:preview.totals.J},
-              {title:'威懲（黃）', color:COLOR_YELL,  data:preview.tfTop.D, total:preview.totals.D},
-              {title:'升級（紅）', color:COLOR_RED,   data:preview.tfTop.E, total:preview.totals.E},
-            ].map((blk,bi)=>(
-              <table key={bi} style={{width:'100%', borderCollapse:'collapse', border:'1px solid #eee'}}>
-                <thead>
-                  <tr><th colSpan={3} style={{...th, textAlign:'left'}}><span style={{display:'inline-block', width:10, height:10, background:blk.color, marginRight:6}}/> {blk.title}</th></tr>
-                  <tr><th style={th}>詞/詞組</th><th style={th}>次數</th><th style={th}>佔比（類內）</th></tr>
-                </thead>
-                <tbody>
-                  {blk.data.map(([w,c]:any, i:number)=>(
-                    <tr key={i}><td style={td}>{w}</td><td style={td}>{c}</td><td style={td}>{(((c as number)/(blk.total||1))*100).toFixed(2)}%</td></tr>
-                  ))}
-                </tbody>
-              </table>
+      <div style={{margin:"10px 0 8px"}}>
+        <label>所屬軍演：
+          <select
+            value={selectedExercise}
+            onChange={e=>onChangeExercise(e.target.value)}
+            style={{...styles.ibox, width:320, marginLeft:6}}
+          >
+            {exerciseOptions.map(op => (
+              <option key={op} value={op}>{op}</option>
             ))}
+          </select>
+        </label>
+        <span style={{marginLeft:10, color:"#666", fontSize:12}}>
+          「全部」也只保留你指定的 7 場軍演資料。
+        </span>
+      </div>
+      <div style={{display:"flex", gap:40, flexWrap:"wrap", margin:"8px 0"}}>
+        <div>
+          <div style={{color:"#666"}}>筆數</div>
+          <div style={{fontSize:22, fontWeight:600}}>{count}</div>
+        </div>
+        <div>
+          <div style={{color:"#666"}}>涵蓋</div>
+          <div style={{fontSize:18}}>{cover}</div>
+        </div>
+      </div>
+      <div style={styles.grid3}>
+        <label>MA 平滑天數
+          <input type="number" value={ma} onChange={e=>setMA(+e.target.value||0)} style={styles.ibox}/>
+        </label>
+        <label>Lead-time（日）
+          <input type="number" value={lead} onChange={e=>setLead(parseInt(e.target.value||"0"))} style={styles.ibox}/>
+        </label>
+        <div/>
+        <label>事件窗起
+          <input type="date" value={winStart||minDateStr} onChange={e=>setWinStart(e.target.value)} style={styles.ibox}/>
+        </label>
+        <label>事件窗訖
+          <input type="date" value={winEnd||maxDateStr} onChange={e=>setWinEnd(e.target.value)} style={styles.ibox}/>
+        </label>
+        <div/>
+        <label>意圖權重 (L1)
+          <input type="number" step="0.1" value={w1} onChange={e=>setW1(+e.target.value||0)} style={styles.ibox}/>
+        </label>
+        <label>威懲權重 (L2)
+          <input type="number" step="0.1" value={w2} onChange={e=>setW2(+e.target.value||0)} style={styles.ibox}/>
+        </label>
+        <label>升級權重 (L3)
+          <input type="number" step="0.1" value={w3} onChange={e=>setW3(+e.target.value||0)} style={styles.ibox}/>
+        </label>
+      </div>
+
+      <div style={{marginTop:12, padding:8, background:"#f0f9ff", border:"1px solid #bae6fd", borderRadius:6, fontSize:13, color:"#0369a1"}}>
+        <strong>⚠️ 模式鎖定：</strong> NCI 計算已強制使用 Excel/CSV 內的「人工校正/Signal_Type」欄位（優先用人工，空值用 Signal_Type 補位）。
+      </div>
+
+      <div style={{marginTop:10, display:"flex", gap:14, flexWrap:"wrap", alignItems:"center"}}>
+        <span style={{color:"#666"}}>顯示線條：</span>
+        <label><input type="checkbox" checked={showJ} onChange={e=>setShowJ(e.target.checked)} /> 意圖-L1（綠）</label>
+        <label><input type="checkbox" checked={showD} onChange={e=>setShowD(e.target.checked)} /> 威懲-L2（黃）</label>
+        <label><input type="checkbox" checked={showE} onChange={e=>setShowE(e.target.checked)} /> 升級-L3（紅）</label>
+        <label><input type="checkbox" checked={showNci} onChange={e=>setShowNci(e.target.checked)} /> NCI（藍）</label>
+        <button onClick={downloadNciCsv} disabled={!preview} style={{...styles.btn, marginLeft:"auto"}}>
+          下載 NCI CSV（date,nci）
+        </button>
+      </div>
+
+      <h2 style={{marginTop:16}}>指數圖（0..1）</h2>
+      {preview && (
+        <MultiLineChart
+          x={preview.dates} nci={preview.lineNci}
+          j={preview.lineJ} d={preview.lineD} e={preview.lineE}
+          showNci={showNci} showJ={showJ} showD={showD} showE={showE}
+        />
+      )}
+
+      {preview && (
+        <section style={{marginTop:14}}>
+          <h3 style={{margin:"10px 0 6px"}}>L1/L2/L3 文章統計（依 Excel 標註）</h3>
+          <div style={{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:12}}>
+            <div style={styles.card}>
+              <div style={styles.cardLabel}>L1 (意圖)</div>
+              <div style={styles.cardValue}>{preview.totJ}</div>
+              <div style={styles.cardNote}>比例：{preview.totAll ? ((preview.totJ/preview.totAll)*100).toFixed(1) : "0.0"}%</div>
+            </div>
+            <div style={styles.card}>
+              <div style={styles.cardLabel}>L2 (威懲)</div>
+              <div style={styles.cardValue}>{preview.totD}</div>
+              <div style={styles.cardNote}>比例：{preview.totAll ? ((preview.totD/preview.totAll)*100).toFixed(1) : "0.0"}%</div>
+            </div>
+            <div style={styles.card}>
+              <div style={styles.cardLabel}>L3 (升級)</div>
+              <div style={styles.cardValue}>{preview.totE}</div>
+              <div style={styles.cardNote}>比例：{preview.totAll ? ((preview.totE/preview.totAll)*100).toFixed(1) : "0.0"}%</div>
+            </div>
+            <div style={styles.card}>
+              <div style={styles.cardLabel}>總文章數</div>
+              <div style={styles.cardValue}>{preview.totAll}</div>
+              <div style={styles.cardNote}>事件窗：{preview.wStart} ～ {preview.wEnd}</div>
+            </div>
           </div>
         </section>
       )}
 
-      <h2 style={{marginTop:18}}>NCI 與 意圖—威懲—升級指數（0-1）</h2>
-      {preview && (
-        <table style={{width:'100%', borderCollapse:'collapse'}}>
-          <thead><tr>{['date','NCI','意圖','威懲','升級'].map((h,i)=><th key={i} style={th}>{h}</th>)}</tr></thead>
-          <tbody>
-            {preview.dates.map((d,i)=>(
-              <tr key={i}>
-                <td style={td}>{d}</td>
-                <td style={td}>{preview.nci[i].toFixed(3)}</td>
-                <td style={td}>{preview.jIdx[i].toFixed(3)}</td>
-                <td style={td}>{preview.dIdx[i].toFixed(3)}</td>
-                <td style={td}>{preview.eIdx[i].toFixed(3)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {top10 && (
+        <section style={{marginTop:14}}>
+          <h3 style={{margin:"10px 0 6px"}}>關鍵詞 Top-10（各類別，命中次數）</h3>
+          <div style={{display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:12}}>
+            <div style={styles.card}>
+              <div style={{...styles.cardLabel, color:"#065f46"}}>意圖詞庫（綠）</div>
+              <ol style={{margin:"8px 0 0 18px"}}>
+                {top10.J.map(x => <li key={x.t}><span>{x.t}</span> <span style={{color:"#666"}}>({x.c})</span></li>)}
+              </ol>
+            </div>
+            <div style={styles.card}>
+              <div style={{...styles.cardLabel, color:"#92400e"}}>威懲詞庫（黃）</div>
+              <ol style={{margin:"8px 0 0 18px"}}>
+                {top10.D.map(x => <li key={x.t}><span>{x.t}</span> <span style={{color:"#666"}}>({x.c})</span></li>)}
+              </ol>
+            </div>
+            <div style={styles.card}>
+              <div style={{...styles.cardLabel, color:"#991b1b"}}>升級詞庫（紅）</div>
+              <ol style={{margin:"8px 0 0 18px"}}>
+                {top10.E.map(x => <li key={x.t}><span>{x.t}</span> <span style={{color:"#666"}}>({x.c})</span></li>)}
+              </ol>
+            </div>
+          </div>
+        </section>
       )}
 
-      {/* 全部列出（日期＋台灣議題短句，高亮） */}
-      {preview && (
-        <>
-          <h3 style={{marginTop:16}}>全部列出（日期＋台灣議題關鍵字斷句）</h3>
-          <table style={{width:'100%', borderCollapse:'collapse'}}>
-            <thead><tr><th style={th}>日期</th><th style={th}>短句（綠=意圖、黃=威懲、紅=升級）</th></tr></thead>
-            <tbody>
-              {preview.rowsForPreview.map((r,ri)=>{
-                const dateStr = String(r[preview.kDate] ?? '');
-                const raw = String(r[preview.kText] ?? '');
-                const show = enableHighlight ? highlight(raw, true) : raw;
-                return (<tr key={ri}><td style={td}>{dateStr}</td><td style={{...td, lineHeight:1.5}} dangerouslySetInnerHTML={{__html:show}}/></tr>);
-              })}
-            </tbody>
-          </table>
-        </>
-      )}
+      <section style={{marginTop:16}}>
+        <h3 style={{margin:"10px 0 6px"}}>全部列出（僅先顯示前 {visibleCount} 筆，避免當機）</h3>
+        <div style={{marginBottom:8, display:"flex", gap:10}}>
+            {visibleRows.length < tableRows.length && (
+                <>
+                    <button onClick={()=>setVisibleCount(prev=>prev+100)} style={styles.btn}>
+                        顯示更多 (+100)
+                    </button>
+                    <button onClick={()=>setVisibleCount(tableRows.length)} style={styles.btn}>
+                        顯示全部 ({tableRows.length})
+                    </button>
+                </>
+            )}
+            <span style={{color:"#666", alignSelf:"center"}}>目前顯示：{visibleRows.length} / {tableRows.length}</span>
+        </div>
+        <div style={{border:"1px solid #eee", borderRadius:10, overflow:"hidden"}}>
+          <div style={{maxHeight:560, overflow:"auto"}}>
+            <table style={{width:"100%", borderCollapse:"collapse"}}>
+              <thead style={{position:"sticky", top:0, zIndex:2}}>
+                <tr>
+                  <th style={styles.th}>日期</th>
+                  <th style={styles.th}>所屬軍演</th>
+                  <th style={styles.th}>來源</th>
+                  <th style={styles.th}>台灣議題斷句（上色）</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map((r, idx)=>{
+                  const date = String(r[keys.kDate] ?? "");
+                  const ex   = String(r[keys.kEx] ?? "");
+                  const src  = String(r[keys.kSrc] ?? "");
+                  const txt  = String(r[keys.kText] ?? "");
+                  const sents = taiwanIssueSentences(txt);
+                  return (
+                    <tr key={idx}>
+                      <td style={styles.tdSmall}>{date}</td>
+                      <td style={styles.tdSmall}>{ex}</td>
+                      <td style={styles.tdSmall}>{src}</td>
+                      <td style={styles.td}>
+                        {sents.length ? (
+                          <div style={{lineHeight:1.6}}>
+                            {sents.map((s,i)=>(
+                              <div key={i} style={{whiteSpace:"pre-wrap", marginBottom:6}}>
+                                <span style={{color:"#666"}}>({i+1}) </span>
+                                <span>{highlightSentence3Colors(s)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span style={{color:"#999"}}>（無台灣語彙句）</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div style={{marginTop:8, color:"#666", fontSize:12}}>
+          顏色規則（優先順序）：升級（紅） &gt; 威懲（黃） &gt; 意圖（綠）。同一詞若同時存在多籃，只用最高優先顏色顯示。
+        </div>
+      </section>
     </main>
   );
 }
 
-/* 樣式 */
-const ibox: React.CSSProperties = { display:'block', width:180, marginTop:4, padding:'6px 8px', border:'1px solid #ddd', borderRadius:6 };
-const btn: React.CSSProperties = { padding:'8px 14px', border:'1px solid #ddd', borderRadius:8, background:'#fff', cursor:'pointer' };
-const th: React.CSSProperties = { textAlign:'left', borderBottom:'1px solid #eee', padding:'6px 4px', background:'#fafafa', fontWeight:600 };
-const td: React.CSSProperties = { borderBottom:'1px solid #f2f2f2', verticalAlign:'top', padding:'6px 4px', fontSize:14 };
+/** ====== 樣式 ====== */
+const styles: Record<string, React.CSSProperties> = {
+  main: { maxWidth: 1150, margin: "20px auto", padding: "0 16px", fontFamily: "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,'Noto Sans TC',sans-serif" },
+  h1: { fontSize: 24, fontWeight: 700, marginBottom: 8 },
+  grid3: { display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:14, marginTop:10 },
+  ibox: { display:"block", width:180, marginTop:4, padding:"6px 8px", border:"1px solid #ddd", borderRadius:6 },
+  btn:  { padding:"8px 14px", border:"1px solid #ddd", borderRadius:8, background:"#fff", cursor:"pointer" },
+  th:   { textAlign:"left", borderBottom:"1px solid #eee", padding:"8px 8px", background:"#fafafa", fontWeight:700, fontSize:13 },
+  td:   { borderBottom:"1px solid #f2f2f2", verticalAlign:"top", padding:"8px 8px", fontSize:14 },
+  tdSmall: { borderBottom:"1px solid #f2f2f2", verticalAlign:"top", padding:"8px 8px", fontSize:13, color:"#333", whiteSpace:"nowrap" },
+  card: { border:"1px solid #eee", borderRadius:10, padding:"10px 12px", background:"#fff" },
+  cardLabel: { fontSize:12, color:"#666" },
+  cardValue: { fontSize:22, fontWeight:700, marginTop:4 },
+  cardNote: { fontSize:12, color:"#666", marginTop:2 },
+};
 
-/* 找欄位（容錯） */
 function findKey(obj:any, cands:string[]){
   const keys = Object.keys(obj).map(k=>stripBom(k));
-  for (const c of cands){ const hit = keys.find(k=>k.toLowerCase()===c.toLowerCase()); if (hit) return hit; }
+  for (const c of cands){
+    const hit = keys.find(k => k.toLowerCase()===c.toLowerCase());
+    if (hit) return hit;
+  }
   return null;
 }
 function findKeyFromArray(rows:any[], cands:string[]){
-  for (const r of rows){ const k = findKey(r, cands); if (k) return k; }
+  for (const r of rows){
+    const k = findKey(r, cands);
+    if (k) return k;
+  }
   return cands[0];
 }
