@@ -1,0 +1,535 @@
+'use client';
+
+import React, { useMemo, useState } from 'react';
+
+/** =========================================================
+ * 0) 論文設定：演習 D-Day 真值表 (基準錨點)
+ * 修正依據：您剛剛提供的正確歷史日期
+ * ========================================================= */
+const EXERCISE_CONFIG: Record<string, string> = {
+  "2022環台軍演": "2022-08-04",           // 修正：8/4
+  "2023聯合利劍": "2023-04-08",           // 維持
+  "2023海空聯合戰備警巡演練": "2023-08-20", // 修正：8/20
+  "聯合利劍2024A": "2024-05-23",          // 維持
+  "聯合利劍2024B": "2024-10-14",          // 維持
+  "海峽雷霆2025": "2025-04-01",           // 修正：4/1
+  "正義使命2025": "2025-12-29",           // 修正：12/29
+};
+
+/** =========================================================
+ * 1) 字典與設定 (保持不變)
+ * ========================================================= */
+const BAG_JUSTIFY = [
+  "維護","捍衛","堅持","反對","遏制","不承諾放棄","不承諾放棄（武力）","武力","致力於","實現",
+  "主權","領土完整","一中原則","九二共識","和平統一","一國兩制","核心利益","民族復興","歷史任務",
+  "祖國統一","底線","紅線","基本方針","堅定","堅決","不可動搖","矢志不渝","一貫","明確",
+  "正當","合法","堅強","意志","堅強（意志）"
+];
+const BAG_DETER = [
+  "嚴正警告","嚴懲","粉碎","清算","打擊","玩火","自焚","埋葬","挑釁","分裂","勾連","注定失敗",
+  "後果自負","死路一條","付出代價","頭破血流","妄想","災難性後果","雷霆之勢","絕不姑息",
+  "萬劫不復","歷史罪人","勿謂言之不預","必將","一定會","不得不","不惜一切代價","任何時候","任何形式"
+];
+const BAG_ESCALATE = [
+  "演練","演習","聯合演訓","警巡","戰備","封鎖","實彈射擊","抵近","懾壓","常態化","巡航","越線",
+  "立體","全天候","進一步","升級","採取","採取（必要）行動","必要行動","反制","拭目以待","奉陪到底",
+  "絕不坐視","反擊","加大","加大（力度）","台島周邊","海空域","越過中線","多軍兵種","全要素",
+  "關門打狗","區域拒止"
+];
+const EXERCISE_ORDER = [
+  "2022環台軍演",
+  "2023聯合利劍",
+  "2023海空聯合戰備警巡演練",
+  "聯合利劍2024A",
+  "聯合利劍2024B",
+  "海峽雷霆2025",
+  "正義使命2025",
+];
+const TAIWAN_LEXICON = [
+  "台灣","台湾","臺灣","台海","臺海","台湾地区","台岛","台島",
+  "兩岸","两岸","海峽兩岸","海峡两岸","中線","中线","台島周邊","台岛周边"
+];
+
+/** ====== 小工具 ====== */
+function esc(s: string){ return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function uniqStr(arr: string[]) {
+  const s = new Set<string>();
+  for (const x of arr) {
+    const v = String(x || "").trim();
+    if (v) s.add(v);
+  }
+  return Array.from(s);
+}
+function makeRe(list: string[]){ return new RegExp(uniqStr(list).map(esc).join("|"), "g"); }
+function stripBom(s: string){ return s.replace(/^\uFEFF/, ""); }
+function toYMD(d: Date){
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString().slice(0,10);
+}
+
+// 強化版日期解析 (對應您的 CSV 格式 2022-07-05)
+function parseYMD(s: string){
+  let t = String(s ?? "").trim().replace(/["']/g,"");
+  if (t.includes(" ")) t = t.split(" ")[0];
+  if (t.includes("T")) t = t.split("T")[0];
+  const m = t.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
+  return isNaN(d.getTime()) ? null : d;
+}
+function addDays(d: Date, n: number){
+  const x = new Date(d);
+  x.setUTCDate(x.getUTCDate()+n);
+  return x;
+}
+function rangeDays(a: Date, b: Date){
+  const out: string[] = [];
+  for(let d=new Date(a); d<=b; d=addDays(d,1)) out.push(toYMD(d));
+  return out;
+}
+// 🔥 核心：計算兩個日期字串的天數差 (d2 - d1)
+function getDaysDiff(d1: string, d2: string) {
+  const t1 = parseYMD(d1)?.getTime() || 0;
+  const t2 = parseYMD(d2)?.getTime() || 0;
+  return Math.round((t2 - t1) / (1000 * 3600 * 24));
+}
+
+// Z-Score
+function zScore(arr: number[]) {
+  const n = arr.length;
+  if (n === 0) return [];
+  const mean = arr.reduce((a, b) => a + b, 0) / n;
+  const variance = arr.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / n;
+  const std = Math.sqrt(variance);
+  if (std === 0) return arr.map(() => 0);
+  return arr.map(v => (v - mean) / std);
+}
+
+function movingAvg(arr: number[], k: number){
+  if (k<=1) return arr.slice();
+  const out: number[] = new Array(arr.length).fill(0);
+  let sum = 0;
+  for (let i=0;i<arr.length;i++){
+    sum += arr[i];
+    if (i>=k) sum -= arr[i-k];
+    out[i] = i>=k-1 ? sum/k : sum/(i+1);
+  }
+  return out;
+}
+function shift(arr: number[], lead: number){
+  const n = arr.length;
+  const out = new Array(n).fill(0);
+  for(let i=0;i<n;i++){
+    const j = i + lead;
+    if (j>=0 && j<n) out[i] = arr[j];
+  }
+  return out;
+}
+function minMaxNormByWindow(series: number[], dates: string[], winStart: string, winEnd: string){
+  let lo = +Infinity, hi = -Infinity;
+  for (let i=0;i<dates.length;i++){
+    if (dates[i]>=winStart && dates[i]<=winEnd){
+      if (series[i]<lo) lo = series[i];
+      if (series[i]>hi) hi = series[i];
+    }
+  }
+  if (!isFinite(lo) || !isFinite(hi) || hi===lo) {
+    lo = Math.min(...series);
+    hi = Math.max(...series);
+    if (hi===lo){ return series.map(_=>0.5); }
+  }
+  const span = hi - lo;
+  return series.map(v => Math.max(0, Math.min(1, (v - lo) / span)));
+}
+
+/** ====== 關鍵詞上色與斷句 (保持不變) ====== */
+const TW_RE = makeRe(TAIWAN_LEXICON);
+function splitSentences(text: string){
+  const s = String(text ?? "").replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim();
+  if (!s) return [];
+  const parts = s.split(/(?<=[。！？!?；;])\s+|\n+/g).map(x=>x.trim()).filter(Boolean);
+  return parts.length<=1 ? s.split(/[，,、]\s*/g).map(x=>x.trim()).filter(Boolean) : parts;
+}
+function taiwanIssueSentences(text: string){
+  return splitSentences(text).filter(s => TW_RE.test(s));
+}
+
+type TokCat = 'justify' | 'deter' | 'escalate';
+type HiTok = { t: string; cat: TokCat; bg: string; fg: string; prio: number };
+const HILITE_TOKENS: HiTok[] = (() => {
+  const prio = { escalate: 3, deter: 2, justify: 1 } as const;
+  const m = new Map<string, HiTok>();
+  const put = (t: string, cat: TokCat) => {
+    const token = String(t||"").trim();
+    if (!token) return;
+    const style = cat === 'escalate' ? { bg:'#fee2e2', fg:'#991b1b' } :
+                  cat === 'deter'    ? { bg:'#fef3c7', fg:'#92400e' } :
+                                       { bg:'#dcfce7', fg:'#065f46' };
+    const cur: HiTok = { t: token, cat, ...style, prio: prio[cat] };
+    const old = m.get(token);
+    if (!old || cur.prio > old.prio) m.set(token, cur);
+  };
+  BAG_JUSTIFY.forEach(t=>put(t,'justify'));
+  BAG_DETER.forEach(t=>put(t,'deter'));
+  BAG_ESCALATE.forEach(t=>put(t,'escalate'));
+  return Array.from(m.values()).sort((a,b)=> b.t.length - a.t.length);
+})();
+
+function highlightSentence3Colors(s: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  const text = s || "";
+  const n = text.length;
+  let i = 0; let key = 0;
+  const startsWithAt = (str: string, sub: string, pos: number) => str.substring(pos, pos + sub.length) === sub;
+  const bestAt = (pos:number): HiTok | null => {
+    for (const tok of HILITE_TOKENS) if (startsWithAt(text, tok.t, pos)) return tok;
+    return null;
+  };
+  const findNextMatch = (from: number): number => {
+    let next = n;
+    for (const tok of HILITE_TOKENS) {
+      const j = text.indexOf(tok.t, from);
+      if (j !== -1 && j < next) next = j;
+    }
+    return next;
+  };
+  while (i < n) {
+    const best = bestAt(i);
+    if (best) {
+      out.push(<span key={key++} style={{background: best.bg, color: best.fg, padding: "0 2px", borderRadius: 4, margin: "0 1px"}}>{best.t}</span>);
+      i += best.t.length; continue;
+    }
+    const next = findNextMatch(i + 1);
+    out.push(<span key={key++}>{text.slice(i, next)}</span>);
+    i = next;
+  }
+  return out;
+}
+
+/** =========================================================
+ * 5) 解析 CSV (保持不變)
+ * ========================================================= */
+function parseTable(text: string){
+  const raw = stripBom(text.replace(/\r\n/g, "\n"));
+  const lines = raw.split("\n").filter(l => l.length>0);
+  if (lines.length===0) return {rows:[], headers:[], delim:","};
+  const delim = lines[0].includes("\t") ? "\t" : ",";
+  const parseLine = (line:string) => {
+    const out:string[]=[]; let cur="",q=false;
+    for(let i=0;i<line.length;i++){
+      const c=line[i];
+      if(q){ if(c==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else q=false; }else cur+=c; }
+      else{ if(c==='"')q=true; else if(c===delim){out.push(cur);cur="";} else cur+=c; }
+    }
+    out.push(cur); return out;
+  };
+  const headers = parseLine(lines[0]).map(h => stripBom(h).replace(/(^"|"$)/g,""));
+  const rows = [];
+  for(let i=1;i<lines.length;i++){
+    const cols = parseLine(lines[i]);
+    if(cols.length===0) continue;
+    const obj:any={};
+    for(let j=0;j<headers.length;j++) obj[headers[j]]=(cols[j]??"").replace(/(^"|"$)/g,"");
+    rows.push(obj);
+  }
+  return {rows, headers, delim};
+}
+
+function findKey(obj:any, cands:string[]){
+  const keys = Object.keys(obj).map(k=>stripBom(k));
+  for (const c of cands){
+    const hit = keys.find(k => k.toLowerCase()===c.toLowerCase());
+    if (hit) return hit;
+  }
+  return null;
+}
+function findKeyFromArray(rows:any[], cands:string[]){
+  for (const r of rows){
+    const k = findKey(r, cands);
+    if (k) return k;
+  }
+  return cands[0];
+}
+
+/** =========================================================
+ * 主元件
+ * ========================================================= */
+export default function Page(){
+  const [fileName, setFileName] = useState<string>("");
+  const [rows, setRows] = useState<any[]>([]);
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [visibleCount, setVisibleCount] = useState(100);
+
+  // 參數
+  const [w1, setW1] = useState(1.0);
+  const [w2, setW2] = useState(1.5);
+  const [w3, setW3] = useState(2.0);
+  const [ma, setMA] = useState(3);
+  const [lead, setLead] = useState(0);
+
+  const [selectedExercise, setSelectedExercise] = useState<string>("全部");
+  const [showNci, setShowNci] = useState(true);
+  const [showJ, setShowJ] = useState(true);
+  const [showD, setShowD] = useState(true);
+  const [showE, setShowE] = useState(true);
+  const [winStart, setWinStart] = useState<string>("");
+  const [winEnd, setWinEnd] = useState<string>("");
+
+  /** 讀檔 */
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>){
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setLoading(true); setErrorMsg(""); setFileName(f.name);
+    const fr = new FileReader();
+    fr.onload = () => {
+      try {
+        const text = typeof fr.result === 'string' ? fr.result : new TextDecoder("utf-8").decode(fr.result as ArrayBuffer);
+        const {rows, headers} = parseTable(text);
+        if (rows.length === 0) setErrorMsg("檔案為空或格式錯誤");
+        else {
+           setRows(rows); setHeaders(headers); setSelectedExercise("全部"); setVisibleCount(100);
+        }
+      } catch (err) { setErrorMsg("解析失敗"); } finally { setLoading(false); }
+    };
+    fr.readAsText(f);
+  }
+
+  // 自動偵測欄位
+  const keys = useMemo(()=>{
+    if (rows.length === 0) return { kEx:"", kDate:"", kSrc:"", kText:"", kManual:"", kAuto:"" };
+    return {
+       kEx: findKeyFromArray(rows, ["所屬軍演","军演","事件","event","exercise","exercise_name","campaign"]),
+       kDate: findKeyFromArray(rows, ["date","日期","Date"]),
+       kSrc: findKeyFromArray(rows, ["source","來源","Media","media"]),
+       kText: findKeyFromArray(rows, ["text","內容","content","Content","內文"]),
+       kManual: findKeyFromArray(rows, ["人工校正", "Manual_Label", "Manual"]),
+       kAuto: findKeyFromArray(rows, ["Signal_Type", "BERT_Label", "Signal"])
+    };
+  },[rows]);
+
+  // 1. 資料清理
+  const cleanedRows = useMemo(()=>{
+    if(rows.length===0) return [];
+    const set7 = new Set(EXERCISE_ORDER);
+    return rows.filter(r => set7.has(String(r[kEx] ?? "").trim()));
+  }, [rows, keys]);
+
+  const filteredRows = useMemo(()=>{
+    if(cleanedRows.length===0) return [];
+    if(selectedExercise==="全部") return cleanedRows;
+    return cleanedRows.filter(r=>String(r[keys.kEx]??"").trim()===selectedExercise);
+  }, [cleanedRows, selectedExercise, keys]);
+
+  // 2. 核心運算
+  const preview = useMemo(()=>{
+    if (filteredRows.length===0) return null;
+
+    const datesSet = new Set(filteredRows.map(r=>toYMD(parseYMD(r[keys.kDate])||new Date())));
+    const dates = Array.from(datesSet).sort();
+    const minD = parseYMD(dates[0])!, maxD = parseYMD(dates[dates.length-1])!;
+    const allDays = rangeDays(minD, maxD);
+    
+    const counts = allDays.map(d => ({j:0, d:0, e:0}));
+    const dayMap = new Map(allDays.map((d,i)=>[d, i]));
+    
+    for(const r of filteredRows){
+       const d = toYMD(parseYMD(r[keys.kDate])||new Date());
+       const idx = dayMap.get(d);
+       if(idx===undefined) continue;
+       
+       const rawMan = String(r[keys.kManual]??"").trim();
+       const rawAuto = String(r[keys.kAuto]??"").trim();
+       let typeStr = (rawMan && rawMan.toLowerCase()!=="nan") ? rawMan : rawAuto;
+       let val = 0;
+       if (!isNaN(parseFloat(typeStr))) val = parseInt(typeStr, 10);
+       else if (typeStr.includes("_")) val = parseInt(typeStr.split("_")[0], 10);
+
+       if(val===1) counts[idx].j++;
+       if(val===2) counts[idx].d++;
+       if(val>=3) counts[idx].e++;
+    }
+
+    const seriesJ = counts.map(c=>c.j);
+    const seriesD = counts.map(c=>c.d);
+    const seriesE = counts.map(c=>c.e);
+
+    // Z-Score
+    const zJ = zScore(seriesJ);
+    const zD = zScore(seriesD);
+    const zE = zScore(seriesE);
+
+    // 平滑化
+    const smoothJ = movingAvg(zJ, ma);
+    const smoothD = movingAvg(zD, ma);
+    const smoothE = movingAvg(zE, ma);
+    
+    // NCI 總分
+    const rawNci = smoothJ.map((v,i) => w1*v + w2*smoothD[i] + w3*smoothE[i]);
+    const smoothNci = movingAvg(rawNci, ma); // 再平滑一次 NCI
+
+    // 歸一化
+    const winS = winStart || allDays[0];
+    const winE = winEnd || allDays[allDays.length-1];
+    const normJ = minMaxNormByWindow(smoothJ, allDays, winS, winE);
+    const normD = minMaxNormByWindow(smoothD, allDays, winS, winE);
+    const normE = minMaxNormByWindow(smoothE, allDays, winS, winE);
+    const normNci = minMaxNormByWindow(smoothNci, allDays, winS, winE);
+
+    return {
+      dates: allDays,
+      lineJ: shift(normJ, lead),
+      lineD: shift(normD, lead),
+      lineE: shift(normE, lead),
+      lineNci: shift(normNci, lead),
+      rawZJ: smoothJ, // 用於偵測
+      count: filteredRows.length,
+      totJ: seriesJ.reduce((a,b)=>a+b,0),
+      totD: seriesD.reduce((a,b)=>a+b,0),
+      totE: seriesE.reduce((a,b)=>a+b,0),
+      totAll: filteredRows.length,
+      wStart: winS, wEnd: winE
+    };
+  }, [filteredRows, ma, lead, w1, w2, w3, winStart, winEnd, keys]);
+
+  // 🔥🔥🔥 自動偵測提前量 (修正版：日期相減)
+  const detectedInfo = useMemo(() => {
+    if (!preview || selectedExercise === "全部") return null;
+    
+    const dDayStr = EXERCISE_CONFIG[selectedExercise];
+    if (!dDayStr) return { msg: "未設定 D-Day", color: "#999" };
+
+    const THRESHOLD = 1.5;
+    const { rawZJ, dates } = preview;
+    let triggerDate = "";
+    
+    for (let i = 0; i < rawZJ.length - 1; i++) {
+      if (rawZJ[i] > THRESHOLD && rawZJ[i+1] > THRESHOLD) {
+        triggerDate = dates[i];
+        break;
+      }
+    }
+
+    if (!triggerDate) return { msg: "未偵測到顯著意圖訊號 (>1.5)", color: "#dc2626" };
+
+    // 使用日期相減
+    const diff = getDaysDiff(triggerDate, dDayStr);
+    
+    return {
+      leadDays: diff,
+      triggerDate: triggerDate,
+      dDay: dDayStr,
+      msg: `系統偵測提前量：${diff} 天`,
+      detail: `(預警日：${triggerDate})`,
+      color: diff > 0 ? "#16a34a" : "#dc2626" // 如果 diff <= 0 (遲報) 變紅色
+    };
+  }, [preview, selectedExercise]);
+
+  // Chart
+  function MultiLineChart(props:any){
+    const {x, nci, j, d, e} = props;
+    if(!x.length) return null;
+    const W=800, H=300, pad=30;
+    const xs = x.map((_:any,i:number)=> pad + i*(W-2*pad)/(x.length-1));
+    const ys = (arr:number[]) => arr.map(v => pad + (H-2*pad)*(1-v)); 
+    const path = (arr:number[], c:string) => 
+       <path d={xs.map((X:number,i:number)=>`${i===0?'M':'L'} ${X} ${ys(arr)[i]}`).join(" ")} fill="none" stroke={c} strokeWidth={2}/>;
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} style={{border:"1px solid #ddd", background:"#fff"}}>
+         <text x={pad} y={pad-10} fontSize={10} fill="#666">1.0</text>
+         <text x={pad} y={H-pad+15} fontSize={10} fill="#666">0.0</text>
+         {props.showJ && path(j, "#16a34a")}
+         {props.showD && path(d, "#f59e0b")}
+         {props.showE && path(e, "#dc2626")}
+         {props.showNci && path(nci, "#2563eb")}
+      </svg>
+    )
+  }
+  
+  const tableRows = useMemo(()=>{
+     if(cleanedRows.length===0) return [];
+     const c = selectedExercise==="全部" ? cleanedRows : cleanedRows.filter(r=>String(r[keys.kEx]??"").trim()===selectedExercise);
+     return c.slice(0, 100);
+  }, [cleanedRows, selectedExercise, keys]);
+
+  return (
+    <main style={{maxWidth: 1000, margin: "20px auto", fontFamily: "sans-serif", padding: 20}}>
+      <h1 style={{fontSize:24, fontWeight:700, marginBottom:10}}>NCI：戰略預警回測系統 (Thesis Ver.)</h1>
+      
+      {errorMsg && <div style={{background:"#fee", color:"red", padding:10, marginBottom:10}}>{errorMsg}</div>}
+
+      <div style={{marginBottom: 20, padding: 15, background: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0"}}>
+        <input type="file" onChange={onPickFile} accept=".csv" />
+        {loading && <span style={{marginLeft:10}}>Loading...</span>}
+      </div>
+
+      <div style={{display:"grid", gridTemplateColumns:"2fr 1fr", gap:20}}>
+         <div>
+            <label style={{display:"block", marginBottom:5, fontWeight:600}}>選擇演習 (D-Day 自動載入)</label>
+            <select value={selectedExercise} onChange={e=>setSelectedExercise(e.target.value)} style={{padding:8, width:"100%", borderRadius:4, border:"1px solid #ccc"}}>
+               <option value="全部">全部</option>
+               {EXERCISE_ORDER.map(o=><option key={o} value={o}>{o}</option>)}
+            </select>
+            
+            <div style={{marginTop:15, display:"flex", gap:10}}>
+              <label>L1權重 <input type="number" value={w1} onChange={e=>setW1(+e.target.value)} style={{width:50}}/></label>
+              <label>L2權重 <input type="number" value={w2} onChange={e=>setW2(+e.target.value)} style={{width:50}}/></label>
+              <label>L3權重 <input type="number" value={w3} onChange={e=>setW3(+e.target.value)} style={{width:50}}/></label>
+              <label>MA <input type="number" value={ma} onChange={e=>setMA(+e.target.value)} style={{width:50}}/></label>
+            </div>
+         </div>
+
+         {/* 🔥 自動偵測結果顯示 */}
+         <div style={{background: "#f0fdf4", padding: 15, borderRadius: 8, border: "2px solid #86efac"}}>
+            <label style={{fontWeight: 700, color: "#15803d", display:"block", marginBottom:8}}>
+               {/* 修正後的代碼：使用 &gt; 取代 > */}
+               🤖 系統演算法偵測 (L1 &gt; 1.5)
+            </label>
+            {detectedInfo ? (
+               <div>
+                  <div style={{fontSize: 18, fontWeight: 800, color: detectedInfo.color}}>
+                     {detectedInfo.msg}
+                  </div>
+                  <div style={{fontSize: 12, color: "#475569", marginTop: 4}}>
+                     D-Day：{detectedInfo.dDay} <br/>
+                     {detectedInfo.detail}
+                  </div>
+               </div>
+            ) : (
+               <div style={{color:"#999", fontSize:13}}>請選擇單一演習以啟動回測</div>
+            )}
+            
+            <div style={{marginTop:10, paddingTop:10, borderTop:"1px dashed #bbf7d0"}}>
+               <label style={{fontSize:12, color:"#166534"}}>手動圖表平移 (Lead-time)</label>
+               <input type="number" value={lead} onChange={e=>setLead(+e.target.value)} style={{width:60, marginLeft:5}}/>
+            </div>
+         </div>
+      </div>
+
+      {preview && (
+         <div style={{marginTop: 30}}>
+            <div style={{marginBottom:5, fontSize:12, color:"#666", display:"flex", gap:10}}>
+               <label><input type="checkbox" checked={showJ} onChange={e=>setShowJ(e.target.checked)}/> 意圖(綠)</label>
+               <label><input type="checkbox" checked={showD} onChange={e=>setShowD(e.target.checked)}/> 威懲(黃)</label>
+               <label><input type="checkbox" checked={showE} onChange={e=>setShowE(e.target.checked)}/> 升級(紅)</label>
+               <label><input type="checkbox" checked={showNci} onChange={e=>setShowNci(e.target.checked)}/> NCI(藍)</label>
+            </div>
+            <MultiLineChart x={preview.dates} nci={preview.lineNci} j={preview.lineJ} d={preview.lineD} e={preview.lineE} 
+                            showJ={showJ} showD={showD} showE={showE} showNci={showNci}/>
+         </div>
+      )}
+
+      {/* 簡單列表 */}
+      <div style={{marginTop: 30, borderTop:"1px solid #eee", paddingTop:20}}>
+         <h3>資料檢視 (前100筆)</h3>
+         {tableRows.map((r,i)=>(
+            <div key={i} style={{fontSize:12, borderBottom:"1px solid #f1f1f1", padding:"4px 0"}}>
+               <span style={{color:"#666", marginRight:10}}>{r[keys.kDate]}</span>
+               <span style={{fontWeight:600, marginRight:10}}>{r[keys.kEx]}</span>
+               {r[keys.kText]?.slice(0,50)}...
+            </div>
+         ))}
+      </div>
+    </main>
+  );
+}

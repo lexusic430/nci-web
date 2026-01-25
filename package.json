@@ -2,8 +2,6 @@
   "name": "nci-web",
   "version": "0.1.0",
   "private": true,
-  "description": "This is a Next.js project bootstrapped with create-next-app.",
-  "main": "index.js",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -43,15 +41,5 @@
     "tailwindcss": "^4",
     "tw-animate-css": "^1.3.8",
     "typescript": "^5"
-  },
-  "directories": {
-    "lib": "lib"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "engines": {
-    "node": "22.x",
-    "npm": "10.x"
   }
 }
