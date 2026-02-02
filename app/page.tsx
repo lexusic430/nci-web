@@ -58,7 +58,11 @@ function uniqStr(arr: string[]) {
   }
   return Array.from(s);
 }
-function makeRe(list: string[]){ return new RegExp(uniqStr(list).map(esc).join("|"), "g"); }
+
+function makeRe(list: string[], flags = "") {
+  return new RegExp(uniqStr(list).map(esc).join("|"), flags);
+}
+
 function stripBom(s: string){ return s.replace(/^\uFEFF/, ""); }
 function toYMD(d: Date){
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
@@ -111,7 +115,7 @@ function movingAvg(arr: number[], k: number){
 }
 
 /** ====== regex ====== */
-const TW_RE = makeRe(TAIWAN_LEXICON);
+const TW_RE = makeRe(TAIWAN_LEXICON); 
 
 /** ====== 斷句 ====== */
 function splitSentences(text: string){
@@ -178,7 +182,14 @@ function highlightSentence3Colors(s: string): React.ReactNode[] {
   while (i < n) {
     const best = bestAt(i);
     if (best) {
-      out.push(<span key={key++} style={{background: best.bg, color: best.fg, padding: "0 2px", borderRadius: 4, margin: "0 1px"}}>{best.t}</span>);
+      out.push(
+        <span
+          key={key++}
+          style={{background: best.bg, color: best.fg, padding: "0 2px", borderRadius: 4, margin: "0 1px"}}
+        >
+          {best.t}
+        </span>
+      );
       i += best.t.length;
     } else {
       const next = findNextMatch(i + 1);
@@ -235,18 +246,20 @@ export default function Page(){
   const [visibleCount, setVisibleCount] = useState(100);
 
   // 權重設為 0.5, 0.75, 1.0 (對齊論文數據)
-  const [w1, setW1] = useState(0.5); 
-  const [w2, setW2] = useState(0.75); 
-  const [w3, setW3] = useState(1.0); 
+  const [w1, setW1] = useState(0.5);
+  const [w2, setW2] = useState(0.75);
+  const [w3, setW3] = useState(1.0);
   const [ma, setMA] = useState(3);
-  const [useLog, setUseLog] = useState(true); // 強制啟用 Log10
+  const [useLog] = useState(true); // 強制啟用 Log10
 
-  const [selectedExercise, setSelectedExercise] = useState<string>("全部");
+  // 🟢 修改：預設選取第一場，而非 "全部"
+  const [selectedExercise, setSelectedExercise] = useState<string>(EXERCISE_ORDER[0]);
 
   const [showNci, setShowNci] = useState(true);
   const [showJ, setShowJ] = useState(true);
   const [showD, setShowD] = useState(true);
   const [showE, setShowE] = useState(true);
+
   const [winStart, setWinStart] = useState<string>("");
   const [winEnd, setWinEnd] = useState<string>("");
 
@@ -257,17 +270,24 @@ export default function Page(){
     const fr = new FileReader();
     fr.onload = () => {
       try {
-        const text = typeof fr.result === 'string' ? fr.result : new TextDecoder("utf-8").decode(fr.result as ArrayBuffer);
+        const text = typeof fr.result === 'string'
+          ? fr.result
+          : new TextDecoder("utf-8").decode(fr.result as ArrayBuffer);
+
         const {rows} = parseTable(text);
         if (rows.length === 0) setErrorMsg("讀取失敗：檔案內容為空。");
         else {
           setRows(rows);
-          setSelectedExercise("全部");
+          // 🟢 修改：讀檔後重置為第一場
+          setSelectedExercise(EXERCISE_ORDER[0]);
           setWinStart(""); setWinEnd("");
           setVisibleCount(100);
         }
-      } catch (err) { setErrorMsg("解析錯誤"); } 
-      finally { setLoading(false); }
+      } catch (err) {
+        setErrorMsg("解析錯誤");
+      } finally {
+        setLoading(false);
+      }
     };
     fr.readAsText(f);
   }
@@ -276,30 +296,31 @@ export default function Page(){
     const kEx   = findKeyFromArray(rows, ["所屬軍演","军演","事件","event","exercise"]);
     const kDate = findKeyFromArray(rows, ["date","日期","Date"]);
     const kSrc  = findKeyFromArray(rows, ["source","來源","Media"]);
-    const kText = findKeyFromArray(rows, ["text","內容","content"]);
+    const kText = findKeyFromArray(rows, ["text","內容","content","Content"]);
     const kManual = findKeyFromArray(rows, ["人工校正", "人工標註", "Manual_Label"]);
     const kAuto   = findKeyFromArray(rows, ["Signal_Type", "BERT_Label", "Signal"]);
     return { kEx, kDate, kSrc, kText, kManual, kAuto };
   },[rows]);
 
-  // 全域資料
+  // 全域資料（只保留 7 場）
   const allValidRows = useMemo(()=>{
     if (rows.length===0) return [];
     const set7 = new Set(EXERCISE_ORDER);
     return rows.filter(r => set7.has(String(r[keys.kEx] ?? "").trim()));
   }, [rows, keys]);
 
-  // 當前顯示資料
+  // 當前軍演篩選
   const filteredRows = useMemo(()=>{
     if (allValidRows.length===0) return [];
-    if (selectedExercise === "全部") return allValidRows;
+    // 🟢 修改：移除 "全部" 的判斷邏輯，直接篩選
     const {kEx} = keys;
     return allValidRows.filter(r => String(r[kEx] ?? "").trim() === selectedExercise);
   }, [allValidRows, selectedExercise, keys]);
 
-  const exerciseOptions = ["全部", ...EXERCISE_ORDER];
+  // 🟢 修改：選項只留 7 場
+  const exerciseOptions = EXERCISE_ORDER;
 
-  // minDateStr / maxDateStr 計算
+  // minDateStr / maxDateStr（依目前 filteredRows）
   const {minDateStr, maxDateStr} = useMemo(()=>{
     if (filteredRows.length===0) return {minDateStr:"", maxDateStr:""};
     let min: Date|null = null;
@@ -317,12 +338,33 @@ export default function Page(){
     };
   }, [filteredRows, keys]);
 
+  const windowRange = useMemo(()=>{
+    const start0 = minDateStr;
+    const end0 = maxDateStr;
+    if (!start0 || !end0) return { start:"", end:"" };
+
+    const start = (winStart && winStart >= start0) ? winStart : start0;
+    const end   = (winEnd && winEnd <= end0) ? winEnd : end0;
+    return { start, end };
+  }, [minDateStr, maxDateStr, winStart, winEnd]);
+
+  const rowsInWindow = useMemo(()=>{
+    if (!windowRange.start || !windowRange.end) return [];
+    const kDate = keys.kDate;
+    return filteredRows.filter(r => {
+      const d = parseYMD(String(r[kDate] ?? ""));
+      if (!d) return false;
+      const day = toYMD(d);
+      return day >= windowRange.start && day <= windowRange.end;
+    });
+  }, [filteredRows, keys, windowRange]);
+
   /** 核心運算：全域基線 + Log10 + 真實 Z-score */
   const preview = useMemo(()=>{
-    if (allValidRows.length===0) return null; // 必須有資料
+    if (allValidRows.length===0) return null;
     const kDate = keys.kDate;
-    
-    // 1. 全域日期範圍
+
+    // 1. 全域日期範圍（baseline：allValidRows）
     let dmin: Date|undefined, dmax: Date|undefined;
     allValidRows.forEach(r => {
       const d = parseYMD(String(r[kDate] ?? ""));
@@ -333,20 +375,20 @@ export default function Page(){
     if (!dmin || !dmax) return null;
     const allDays = rangeDays(dmin, dmax);
 
-    // 2. 全域每日計數
-    const mapJ = new Map<string, number>();      
-    const mapD = new Map<string, number>();      
-    const mapE = new Map<string, number>();      
+    // 2. 全域每日計數（依人工校正優先）
+    const mapJ = new Map<string, number>();
+    const mapD = new Map<string, number>();
+    const mapE = new Map<string, number>();
 
     allValidRows.forEach(r => {
       const d = parseYMD(String(r[kDate] ?? ""));
       if (!d) return;
       const day = toYMD(d);
-      
+
       const rawMan  = String(r[keys.kManual] ?? "").trim();
       const rawAuto = String(r[keys.kAuto]   ?? "").trim();
-      let targetStr = (rawMan && rawMan.toLowerCase() !== "nan") ? rawMan : rawAuto;
-      
+      const targetStr = (rawMan && rawMan.toLowerCase() !== "nan") ? rawMan : rawAuto;
+
       let val = 0;
       if (!isNaN(parseFloat(targetStr))) val = parseInt(targetStr, 10);
       else if (targetStr.includes("_")) val = parseInt(targetStr.split("_")[0], 10);
@@ -356,16 +398,16 @@ export default function Page(){
       if (val >= 3)  mapE.set(day, (mapE.get(day)||0) + 1);
     });
 
-    const seriesJ = allDays.map(d => mapJ.get(d) || 0); 
-    const seriesD = allDays.map(d => mapD.get(d) || 0); 
-    const seriesE = allDays.map(d => mapE.get(d) || 0); 
+    const seriesJ = allDays.map(d => mapJ.get(d) || 0);
+    const seriesD = allDays.map(d => mapD.get(d) || 0);
+    const seriesE = allDays.map(d => mapE.get(d) || 0);
 
     // 3. Log 轉換
     const tJ = useLog ? seriesJ.map(x => Math.log10(x + 1)) : seriesJ;
     const tD = useLog ? seriesD.map(x => Math.log10(x + 1)) : seriesD;
     const tE = useLog ? seriesE.map(x => Math.log10(x + 1)) : seriesE;
 
-    // 4. Z-Score (全域)
+    // 4. Z-Score (全域 baseline)
     const zJ = zScore(tJ);
     const zD = zScore(tD);
     const zE = zScore(tE);
@@ -379,57 +421,49 @@ export default function Page(){
     const lineD   = movingAvg(zD, ma);
     const lineE   = movingAvg(zE, ma);
 
-    // 7. 切割顯示範圍
-    let fMin = dmin, fMax = dmax;
-    if (selectedExercise !== "全部" && filteredRows.length > 0) {
-       const dates = filteredRows.map(r => parseYMD(String(r[kDate]??""))?.getTime() || 0).filter(t=>t>0).sort((a,b)=>a-b);
-       if (dates.length > 0) {
-         fMin = new Date(dates[0]);
-         fMax = new Date(dates[dates.length-1]);
-       }
-    }
-    const fStartStr = toYMD(fMin);
-    const fEndStr = toYMD(fMax);
-    const displayStartStr = (winStart && winStart >= fStartStr) ? winStart : fStartStr;
-    const displayEndStr = (winEnd && winEnd <= fEndStr) ? winEnd : fEndStr;
+    // 7. 切割顯示範圍（依 windowRange）
+    const displayStartStr = windowRange.start || toYMD(dmin);
+    const displayEndStr   = windowRange.end   || toYMD(dmax);
 
-    const indices = allDays.map((d, i) => (d >= displayStartStr && d <= displayEndStr) ? i : -1).filter(i => i !== -1);
-    
+    const indices = allDays
+      .map((d, i) => (d >= displayStartStr && d <= displayEndStr) ? i : -1)
+      .filter(i => i !== -1);
+
     const displayDates = indices.map(i => allDays[i]);
     const displayNci = indices.map(i => lineNci[i]);
     const displayJ = indices.map(i => lineJ[i]);
     const displayD = indices.map(i => lineD[i]);
     const displayE = indices.map(i => lineE[i]);
 
-    // 統計 (僅針對當前選擇範圍)
-    const subJ = filteredRows.reduce((acc, r) => {
-       const target = (r[keys.kManual] && String(r[keys.kManual]).toLowerCase()!=='nan') ? r[keys.kManual] : r[keys.kAuto];
-       return (String(target).startsWith('1')) ? acc+1 : acc;
+    // ✅ 統計（事件窗內 rowsInWindow，跟圖一致）
+    const subJ = rowsInWindow.reduce((acc, r) => {
+      const target = (r[keys.kManual] && String(r[keys.kManual]).toLowerCase()!=='nan') ? r[keys.kManual] : r[keys.kAuto];
+      return (String(target).startsWith('1')) ? acc+1 : acc;
     }, 0);
-    const subD = filteredRows.reduce((acc, r) => {
-       const target = (r[keys.kManual] && String(r[keys.kManual]).toLowerCase()!=='nan') ? r[keys.kManual] : r[keys.kAuto];
-       return (String(target).startsWith('2')) ? acc+1 : acc;
+    const subD = rowsInWindow.reduce((acc, r) => {
+      const target = (r[keys.kManual] && String(r[keys.kManual]).toLowerCase()!=='nan') ? r[keys.kManual] : r[keys.kAuto];
+      return (String(target).startsWith('2')) ? acc+1 : acc;
     }, 0);
-    const subE = filteredRows.reduce((acc, r) => {
-       const target = (r[keys.kManual] && String(r[keys.kManual]).toLowerCase()!=='nan') ? r[keys.kManual] : r[keys.kAuto];
-       const v = parseFloat(String(target));
-       return (v>=3) ? acc+1 : acc;
+    const subE = rowsInWindow.reduce((acc, r) => {
+      const target = (r[keys.kManual] && String(r[keys.kManual]).toLowerCase()!=='nan') ? r[keys.kManual] : r[keys.kAuto];
+      const v = parseFloat(String(target));
+      return (v>=3) ? acc+1 : acc;
     }, 0);
     const subAll = subJ + subD + subE;
 
     return {
-      dates: displayDates, 
-      cover: `${displayStartStr} ~ ${displayEndStr}`, 
-      count: filteredRows.length,
+      dates: displayDates,
+      cover: `${displayStartStr} ~ ${displayEndStr}`,
+      count: rowsInWindow.length,
       lineNci: displayNci, lineJ: displayJ, lineD: displayD, lineE: displayE,
       totJ: subJ, totD: subD, totE: subE, totAll: subAll,
       wStart: displayStartStr, wEnd: displayEndStr
     };
-  }, [allValidRows, filteredRows, keys, ma, w1, w2, w3, useLog, winStart, winEnd, selectedExercise]);
+  }, [allValidRows, rowsInWindow, keys, ma, w1, w2, w3, useLog, windowRange]);
 
   const top10 = useMemo(()=>{
-    if (filteredRows.length===0) return null;
-    const textAll = filteredRows.map(r => `${r[keys.kText] ?? ""} ${r[keys.kSrc] ?? ""}`).join("\n");
+    if (rowsInWindow.length===0) return null;
+    const textAll = rowsInWindow.map(r => `${r[keys.kText] ?? ""} ${r[keys.kSrc] ?? ""}`).join("\n");
     const countPerToken = (tokens: string[]) => {
       const uniq = uniqStr(tokens).sort((a,b)=>b.length-a.length);
       const arr = uniq.map(t=>{
@@ -445,7 +479,7 @@ export default function Page(){
       D: countPerToken(BAG_DETER),
       E: countPerToken(BAG_ESCALATE),
     };
-  }, [filteredRows, keys]);
+  }, [rowsInWindow, keys]);
 
   function downloadNciCsv(){
     if (!preview) return;
@@ -469,14 +503,14 @@ export default function Page(){
 
     if (!x.length) return null;
     const W=1000, H=360, pad=36;
-    
+
     // 計算動態 Y 軸範圍
-    const allVals = [];
+    const allVals: number[] = [];
     if (showNci) allVals.push(...nci);
     if (showJ) allVals.push(...j);
     if (showD) allVals.push(...d);
     if (showE) allVals.push(...e);
-    allVals.push(1.5); 
+    allVals.push(1.5);
 
     let minV = Math.min(...allVals);
     let maxV = Math.max(...allVals);
@@ -487,51 +521,45 @@ export default function Page(){
 
     const xs = x.map((_:any, i:number)=> pad + i*(W-2*pad)/Math.max(1,x.length-1));
     const yMap = (v:number) => pad + (H-2*pad)*(1 - (v - minV)/(maxV - minV));
-    
+
     const toPath = (arr:number[]) => {
       return xs.map((X:number,i:number)=> `${i===0?"M":"L"} ${X.toFixed(1)} ${yMap(arr[i]).toFixed(1)}`).join(" ");
     };
 
     const yThreshold = yMap(1.5);
     const tickCount = Math.min(x.length, 10);
-    const xticks = [];
+    const xticks: number[] = [];
     for(let k=0; k<tickCount; k++) xticks.push(Math.floor(k*(x.length-1)/(tickCount-1)));
 
     // 滑鼠事件處理
     const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-        if (!svgRef.current) return;
-        const rect = svgRef.current.getBoundingClientRect();
-        // 取得相對於 SVG 的 X 座標（考慮縮放）
-        const scaleX = W / rect.width; 
-        const mouseX = (e.clientX - rect.left) * scaleX;
+      if (!svgRef.current) return;
+      const rect = svgRef.current.getBoundingClientRect();
+      const scaleX = W / rect.width;
+      const mouseX = (e.clientX - rect.left) * scaleX;
 
-        // 計算對應的索引
-        // x = pad + idx * gap
-        // idx = (x - pad) / gap
-        const innerWidth = W - 2 * pad;
-        const gap = innerWidth / Math.max(1, x.length - 1);
-        let idx = Math.round((mouseX - pad) / gap);
+      const innerWidth = W - 2 * pad;
+      const gap = innerWidth / Math.max(1, x.length - 1);
+      let idx = Math.round((mouseX - pad) / gap);
 
-        if (idx < 0) idx = 0;
-        if (idx >= x.length) idx = x.length - 1;
-        setHoverIdx(idx);
+      if (idx < 0) idx = 0;
+      if (idx >= x.length) idx = x.length - 1;
+      setHoverIdx(idx);
     };
 
-    const handleMouseLeave = () => {
-        setHoverIdx(null);
-    };
-    
+    const handleMouseLeave = () => setHoverIdx(null);
+
     return (
-      <svg 
+      <svg
         ref={svgRef}
-        width="100%" 
-        viewBox={`0 0 ${W} ${H}`} 
+        width="100%"
+        viewBox={`0 0 ${W} ${H}`}
         style={{border:"1px solid #eee", background:"#fff", cursor: "crosshair"}}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
       >
         <rect x={0} y={0} width={W} height={H} fill="#fff"/>
-        
+
         {/* Y軸網格 */}
         {[0, 0.25, 0.5, 0.75, 1].map((r, i) => {
           const val = minV + (maxV - minV) * r;
@@ -555,32 +583,29 @@ export default function Page(){
 
         {/* 互動層：垂直準線與 Tooltip */}
         {hoverIdx !== null && (
-            <g>
-                {/* 垂直線 */}
-                <line 
-                    x1={xs[hoverIdx]} y1={pad} 
-                    x2={xs[hoverIdx]} y2={H-pad} 
-                    stroke="#333" strokeWidth={1} strokeDasharray="4,2" 
-                />
-                {/* Tooltip 框框 (自動判斷靠左或靠右) */}
-                <g transform={`translate(${xs[hoverIdx] > W/2 ? xs[hoverIdx] - 130 : xs[hoverIdx] + 10}, ${pad + 10})`}>
-                    <rect x={0} y={0} width={120} height={100} fill="rgba(255, 255, 255, 0.9)" stroke="#ccc" rx={4} />
-                    <text x={10} y={20} fontSize="12" fontWeight="bold" fill="#333">{x[hoverIdx]}</text>
-                    {showNci && <text x={10} y={40} fontSize="11" fill="#2563eb" fontWeight="bold">NCI: {nci[hoverIdx].toFixed(2)}</text>}
-                    {showE && <text x={10} y={56} fontSize="11" fill="#dc2626">升級(L3): {e[hoverIdx].toFixed(2)}</text>}
-                    {showD && <text x={10} y={72} fontSize="11" fill="#f59e0b">威懲(L2): {d[hoverIdx].toFixed(2)}</text>}
-                    {showJ && <text x={10} y={88} fontSize="11" fill="#16a34a">意圖(L1): {j[hoverIdx].toFixed(2)}</text>}
-                </g>
-                {/* 當前點的圓圈 */}
-                {showNci && <circle cx={xs[hoverIdx]} cy={yMap(nci[hoverIdx])} r={4} fill="#2563eb" stroke="#fff" strokeWidth={2} />}
+          <g>
+            <line
+              x1={xs[hoverIdx]} y1={pad}
+              x2={xs[hoverIdx]} y2={H-pad}
+              stroke="#333" strokeWidth={1} strokeDasharray="4,2"
+            />
+            <g transform={`translate(${xs[hoverIdx] > W/2 ? xs[hoverIdx] - 130 : xs[hoverIdx] + 10}, ${pad + 10})`}>
+              <rect x={0} y={0} width={120} height={100} fill="rgba(255, 255, 255, 0.9)" stroke="#ccc" rx={4} />
+              <text x={10} y={20} fontSize="12" fontWeight="bold" fill="#333">{x[hoverIdx]}</text>
+              {showNci && <text x={10} y={40} fontSize="11" fill="#2563eb" fontWeight="bold">NCI: {nci[hoverIdx].toFixed(2)}</text>}
+              {showE && <text x={10} y={56} fontSize="11" fill="#dc2626">升級(L3): {e[hoverIdx].toFixed(2)}</text>}
+              {showD && <text x={10} y={72} fontSize="11" fill="#f59e0b">威懲(L2): {d[hoverIdx].toFixed(2)}</text>}
+              {showJ && <text x={10} y={88} fontSize="11" fill="#16a34a">意圖(L1): {j[hoverIdx].toFixed(2)}</text>}
             </g>
+            {showNci && <circle cx={xs[hoverIdx]} cy={yMap(nci[hoverIdx])} r={4} fill="#2563eb" stroke="#fff" strokeWidth={2} />}
+          </g>
         )}
 
         <line x1={pad} y1={pad} x2={pad} y2={H-pad} stroke="#333"/>
         <line x1={pad} y1={H-pad} x2={W-pad} y2={H-pad} stroke="#333"/>
 
         {xticks.map((i, idx) => (
-           <text key={idx} x={xs[i]} y={H-pad+16} fontSize="10" textAnchor="middle">{x[i]}</text>
+          <text key={idx} x={xs[i]} y={H-pad+16} fontSize="10" textAnchor="middle">{x[i]}</text>
         ))}
 
         <text x={14} y={H/2} transform={`rotate(-90, 14, ${H/2})`} fontSize="12" fill="#333">NCI 指數 (Z-score)</text>
@@ -588,26 +613,27 @@ export default function Page(){
     );
   }
 
-  // tableRows 定義
+  // ✅ 列表也改用事件窗內 rowsInWindow
   const tableRows = useMemo(()=>{
-    if (filteredRows.length===0) return [];
+    if (rowsInWindow.length===0) return [];
     const kDate = keys.kDate;
-    const arr = filteredRows.slice();
+    const arr = rowsInWindow.slice();
     arr.sort((a,b)=>{
       const da = parseYMD(String(a[kDate]??""))?.getTime() ?? 0;
       const db = parseYMD(String(b[kDate]??""))?.getTime() ?? 0;
       return da - db;
     });
     return arr;
-  }, [filteredRows, keys]);
+  }, [rowsInWindow, keys]);
 
   const visibleRows = tableRows.slice(0, visibleCount);
 
+  const resetWindow = () => { setWinStart(""); setWinEnd(""); };
+
   return (
     <main style={styles.main}>
-      {/* 🟢 修改點 1：標題更新 */}
       <h1 style={styles.h1}>敘事脅迫指數(NCI)預警平台</h1>
-      
+
       {errorMsg && (
         <div style={{background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:8, marginBottom:10, border:"1px solid #fecaca"}}>
           🚨 {errorMsg}
@@ -632,19 +658,21 @@ export default function Page(){
           </select>
         </label>
         <span style={{marginLeft:10, color:"#666", fontSize:12}}>
-          「全部」也只保留你指定的 7 場軍演資料。
+          (已鎖定僅顯示特定軍演)
         </span>
       </div>
+
       <div style={{display:"flex", gap:40, flexWrap:"wrap", margin:"8px 0"}}>
         <div>
-          <div style={{color:"#666"}}>筆數</div>
+          <div style={{color:"#666"}}>筆數（事件窗內）</div>
           <div style={{fontSize:22, fontWeight:600}}>{preview?.count ?? 0}</div>
         </div>
         <div>
-          <div style={{color:"#666"}}>涵蓋</div>
+          <div style={{color:"#666"}}>涵蓋（事件窗）</div>
           <div style={{fontSize:18}}>{preview?.cover ?? "~"}</div>
         </div>
       </div>
+
       <div style={styles.grid3}>
         <label>MA 平滑天數
           <input type="number" value={ma} onChange={e=>setMA(+e.target.value||0)} style={styles.ibox}/>
@@ -653,12 +681,39 @@ export default function Page(){
         <div />
 
         <label>事件窗起
-          <input type="date" value={winStart||minDateStr} onChange={e=>setWinStart(e.target.value)} style={styles.ibox}/>
+          <input
+            type="date"
+            value={winStart}
+            min={minDateStr || undefined}
+            max={maxDateStr || undefined}
+            onChange={e=>setWinStart(e.target.value)}
+            style={styles.ibox}
+          />
+          <div style={{fontSize:12, color:"#666", marginTop:4}}>
+            不填則用：{minDateStr || "—"}
+          </div>
         </label>
+
         <label>事件窗訖
-          <input type="date" value={winEnd||maxDateStr} onChange={e=>setWinEnd(e.target.value)} style={styles.ibox}/>
+          <input
+            type="date"
+            value={winEnd}
+            min={minDateStr || undefined}
+            max={maxDateStr || undefined}
+            onChange={e=>setWinEnd(e.target.value)}
+            style={styles.ibox}
+          />
+          <div style={{fontSize:12, color:"#666", marginTop:4}}>
+            不填則用：{maxDateStr || "—"}
+          </div>
         </label>
-        <div/>
+
+        <div style={{display:"flex", alignItems:"flex-end"}}>
+          <button onClick={resetWindow} style={styles.btn} disabled={!minDateStr || !maxDateStr}>
+            重置事件窗
+          </button>
+        </div>
+
         <label>意圖權重 (L1)
           <input type="number" step="0.1" value={w1} onChange={e=>setW1(+e.target.value||0)} style={styles.ibox}/>
         </label>
@@ -671,7 +726,9 @@ export default function Page(){
       </div>
 
       <div style={{marginTop:12, padding:8, background:"#f0f9ff", border:"1px solid #bae6fd", borderRadius:6, fontSize:13, color:"#0369a1"}}>
-        <strong>⚠️ 模式鎖定：</strong> NCI 計算已強制使用 Excel/CSV 內的「人工校正/Signal_Type」欄位（優先用人工，空值用 Signal_Type 補位）。
+        <strong>⚠️ 模式鎖定：</strong>
+        NCI 計算已強制使用 Excel/CSV 內的「人工校正/Signal_Type」欄位（優先用人工，空值用 Signal_Type 補位），
+        且「事件窗」會同步影響圖、統計與列表。
       </div>
 
       <div style={{marginTop:10, display:"flex", gap:14, flexWrap:"wrap", alignItems:"center"}}>
@@ -690,14 +747,12 @@ export default function Page(){
         <MultiLineChart
           x={preview.dates} nci={preview.lineNci}
           j={preview.lineJ} d={preview.lineD} e={preview.lineE}
-          showNci={showNci} showJ={showJ} showD={showD} showE={showE}
         />
       )}
 
-      {/* 統計區塊與列表區塊保持不變 */}
       {preview && (
         <section style={{marginTop:14}}>
-          <h3 style={{margin:"10px 0 6px"}}>L1/L2/L3 文章統計（依 Excel 標註）</h3>
+          <h3 style={{margin:"10px 0 6px"}}>L1/L2/L3 文章統計（事件窗內，依 Excel 標註）</h3>
           <div style={{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:12}}>
             <div style={styles.card}>
               <div style={styles.cardLabel}>L1 (意圖)</div>
@@ -725,7 +780,7 @@ export default function Page(){
 
       {top10 && (
         <section style={{marginTop:14}}>
-          <h3 style={{margin:"10px 0 6px"}}>關鍵詞 Top-10（各類別，命中次數）</h3>
+          <h3 style={{margin:"10px 0 6px"}}>關鍵詞 Top-10（各類別，命中次數；事件窗內）</h3>
           <div style={{display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:12}}>
             <div style={styles.card}>
               <div style={{...styles.cardLabel, color:"#065f46"}}>意圖詞庫（綠）</div>
@@ -750,20 +805,21 @@ export default function Page(){
       )}
 
       <section style={{marginTop:16}}>
-        <h3 style={{margin:"10px 0 6px"}}>全部列出（僅先顯示前 {visibleCount} 筆，避免當機）</h3>
+        <h3 style={{margin:"10px 0 6px"}}>全部列出（事件窗內；僅先顯示前 {visibleCount} 筆，避免當機）</h3>
         <div style={{marginBottom:8, display:"flex", gap:10}}>
-            {visibleRows.length < tableRows.length && (
-                <>
-                    <button onClick={()=>setVisibleCount(prev=>prev+100)} style={styles.btn}>
-                        顯示更多 (+100)
-                    </button>
-                    <button onClick={()=>setVisibleCount(tableRows.length)} style={styles.btn}>
-                        顯示全部 ({tableRows.length})
-                    </button>
-                </>
-            )}
-            <span style={{color:"#666", alignSelf:"center"}}>目前顯示：{visibleRows.length} / {tableRows.length}</span>
+          {visibleRows.length < tableRows.length && (
+            <>
+              <button onClick={()=>setVisibleCount(prev=>prev+100)} style={styles.btn}>
+                顯示更多 (+100)
+              </button>
+              <button onClick={()=>setVisibleCount(tableRows.length)} style={styles.btn}>
+                顯示全部 ({tableRows.length})
+              </button>
+            </>
+          )}
+          <span style={{color:"#666", alignSelf:"center"}}>目前顯示：{visibleRows.length} / {tableRows.length}</span>
         </div>
+
         <div style={{border:"1px solid #eee", borderRadius:10, overflow:"hidden"}}>
           <div style={{maxHeight:560, overflow:"auto"}}>
             <table style={{width:"100%", borderCollapse:"collapse"}}>
@@ -808,6 +864,7 @@ export default function Page(){
             </table>
           </div>
         </div>
+
         <div style={{marginTop:8, color:"#666", fontSize:12}}>
           顏色規則（優先順序）：升級（紅） &gt; 威懲（黃） &gt; 意圖（綠）。同一詞若同時存在多籃，只用最高優先顏色顯示。
         </div>
